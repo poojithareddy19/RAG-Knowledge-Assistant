@@ -1,0 +1,6 @@
+question,expected_answer,relevant_documents,relevant_pages,ground_truth_passage
+When do employees become eligible for parental leave?,After completing twelve months of continuous employment.,Employee_Handbook.pdf,42,Employees become eligible after completing twelve months of continuous employment.
+How many remote days per week are allowed?,Up to three days per week with manager approval.,Employee_Handbook.pdf,17,Remote work is permitted up to three days per week with manager approval.
+What is the standard notice period for resignation?,Thirty days written notice.,Employee_Handbook.pdf,58,Employees must provide thirty days written notice of resignation.
+Who approves expense reimbursements over $500?,The department director.,Finance_Policy.pdf,9,Expense reimbursements exceeding $500 require department director approval.
+How long are financial records retained?,Seven years.,Compliance_Manual.pdf,23,Financial records must be retained for a minimum of seven years.

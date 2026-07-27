@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Data & runtime artifacts (keep the folders via .gitkeep, ignore contents)
+data/raw/*
+data/processed/*
+data/vector_store/*
+logs/*
+!**/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,70 @@
+# ============================================================================
+# Production RAG Knowledge Assistant — central configuration
+# ----------------------------------------------------------------------------
+# Anything that changes system *behaviour* (thresholds, models, chunk sizes)
+# lives here so it can be tuned without touching code. Secrets (API keys) live
+# in .env instead. Values here can be overridden by environment variables of
+# the same UPPER_SNAKE name (see src/utils/config.py).
+# ============================================================================
+
+app:
+  name: "Production RAG Knowledge Assistant"
+  version: "0.1.0"
+
+paths:
+  raw_dir: "data/raw"                 # original uploaded files
+  processed_dir: "data/processed"      # extracted / chunked artifacts
+  vector_store_dir: "data/vector_store"
+  log_dir: "logs"
+
+ingestion:
+  # Recursive character splitter. Sizes are in characters, not tokens, to keep
+  # the system tokenizer-agnostic. ~1000 chars ≈ 250 tokens for English prose.
+  chunk_size: 1000
+  chunk_overlap: 150
+  # Files smaller than this (chars) are kept as a single chunk.
+  min_chunk_chars: 40
+
+embeddings:
+  # Must expose a HuggingFace sentence-transformers compatible id.
+  model_name: "BAAI/bge-small-en-v1.5"
+  # bge models were trained with an instruction prefix on the *query* side.
+  # Leave empty for models that don't need it (e.g. all-MiniLM-L6-v2).
+  query_prefix: "Represent this sentence for searching relevant passages: "
+  passage_prefix: ""
+  normalize: true            # required for cosine similarity via inner product
+  batch_size: 32
+  device: "cpu"              # "cuda" if a GPU is available
+
+vectorstore:
+  backend: "faiss"           # faiss | chroma  (faiss implemented in this build)
+  metric: "cosine"           # cosine (inner-product on normalized vectors)
+
+retrieval:
+  top_k: 5
+  # Fetch a larger candidate pool before optional reranking, then trim to top_k.
+  fetch_k: 20
+  use_reranker: false        # cross-encoder reranker (see docs/design_decisions)
+  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+confidence:
+  # See src/retrieval/confidence.py for the exact formula. Weights must sum ~1.
+  weights:
+    mean_similarity: 0.6
+    support: 0.3          # fraction of top-k chunks above `support_floor`
+    spread: 0.1           # penalises high variance across retrieved scores
+  support_floor: 0.35     # a chunk "supports" the answer above this cosine sim
+  # Below this normalized confidence (0-1) the system refuses to answer.
+  answer_threshold: 0.45
+
+generation:
+  provider: "openai"        # openai | gemini | ollama  (override in .env)
+  model: "gpt-4o-mini"
+  temperature: 0.0
+  max_tokens: 700
+  # When true the exact prompt sent to the LLM is stored for explainability.
+  expose_prompt: true
+
+monitoring:
+  log_file: "logs/interactions.jsonl"
+  level: "INFO"
