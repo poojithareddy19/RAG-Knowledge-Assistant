@@ -1,0 +1,25 @@
+﻿services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: gda_postgres
+
+    environment:
+      POSTGRES_USER: gda
+      POSTGRES_PASSWORD: gda_local_pw
+      POSTGRES_DB: gda
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gda -d gda"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

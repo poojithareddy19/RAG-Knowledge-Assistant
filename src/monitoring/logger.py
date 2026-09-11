@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from src.utils.config import get_config
 from src.utils.schemas import Answer
@@ -45,7 +45,7 @@ def log_interaction(answer: Answer) -> None:
     cfg = get_config()
     logger = _ensure_logging()
 
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "question": answer.question,
         "answer": answer.answer,

@@ -6,8 +6,8 @@ around. This is the backbone that keeps the architecture modular.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -27,7 +27,7 @@ class Chunk:
         # and cost estimation without importing a tokenizer per document type.
         self.token_estimate = max(1, self.char_len // 4)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -39,7 +39,7 @@ class RetrievedChunk:
     score: float             # cosine similarity in [-1, 1], typically [0, 1]
     rank: int                # 1-based position in the result list
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = self.chunk.to_dict()
         d.update({"score": self.score, "rank": self.rank})
         return d
@@ -51,10 +51,10 @@ class Confidence:
 
     score: float                       # normalized 0-1
     percent: int                       # 0-100 for display
-    components: Dict[str, float] = field(default_factory=dict)
+    components: dict[str, float] = field(default_factory=dict)
     n_supporting: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -66,17 +66,17 @@ class Answer:
     answer: str
     answered: bool                     # False when the system declined
     confidence: Confidence
-    sources: List[RetrievedChunk] = field(default_factory=list)
-    latency_ms: Dict[str, float] = field(default_factory=dict)
-    tokens: Dict[str, int] = field(default_factory=dict)
+    sources: list[RetrievedChunk] = field(default_factory=list)
+    latency_ms: dict[str, float] = field(default_factory=dict)
+    tokens: dict[str, int] = field(default_factory=dict)
     provider: str = ""
     model: str = ""
     embedding_model: str = ""
-    prompt: Optional[str] = None       # populated when expose_prompt is on
+    prompt: str | None = None       # populated when expose_prompt is on
     reason: str = ""                   # why an answer was declined, if so
-    error: Optional[str] = None
+    error: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "question": self.question,
             "answer": self.answer,

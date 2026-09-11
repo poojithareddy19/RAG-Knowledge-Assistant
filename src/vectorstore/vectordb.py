@@ -15,7 +15,6 @@ import json
 import pickle
 import time
 from pathlib import Path
-from typing import Dict, List
 
 import numpy as np
 
@@ -36,12 +35,12 @@ class FaissVectorStore:
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self._faiss = faiss
         self.index = faiss.IndexFlatIP(dimension)
-        self.chunks: List[Chunk] = []
+        self.chunks: list[Chunk] = []
         # manifest[doc_name] = {pages, chunks, indexed_at, embedding_model}
-        self.manifest: Dict[str, dict] = {}
+        self.manifest: dict[str, dict] = {}
 
     # -- write ---------------------------------------------------------------
-    def add(self, chunks: List[Chunk], vectors: np.ndarray, embedding_model: str) -> None:
+    def add(self, chunks: list[Chunk], vectors: np.ndarray, embedding_model: str) -> None:
         if len(chunks) == 0:
             return
         if vectors.shape[1] != self.dimension:
@@ -64,14 +63,17 @@ class FaissVectorStore:
         return doc_name in self.manifest
 
     # -- read ----------------------------------------------------------------
-    def search(self, query_vector: np.ndarray, k: int) -> List[RetrievedChunk]:
+    def search(self, query_vector: np.ndarray, k: int) -> list[RetrievedChunk]:
         if self.index.ntotal == 0:
             return []
         q = np.asarray(query_vector, dtype="float32").reshape(1, -1)
         k = min(k, self.index.ntotal)
         scores, ids = self.index.search(q, k)
-        results: List[RetrievedChunk] = []
-        for rank, (idx, score) in enumerate(zip(ids[0], scores[0]), start=1):
+        results: list[RetrievedChunk] = []
+        for rank, (idx, score) in enumerate(
+            zip(ids[0], scores[0], strict=True), 
+            start=1
+        ):
             if idx < 0:
                 continue
             results.append(
@@ -96,7 +98,7 @@ class FaissVectorStore:
             json.dump(self.manifest, fh, indent=2)
 
     @classmethod
-    def load(cls, dimension: int, store_dir: str | None = None) -> "FaissVectorStore":
+    def load(cls, dimension: int, store_dir: str | None = None) -> FaissVectorStore:
         store = cls(dimension=dimension, store_dir=store_dir)
         index_path = store.store_dir / INDEX_FILE
         if index_path.exists():
@@ -105,7 +107,7 @@ class FaissVectorStore:
                 store.chunks = pickle.load(fh)
             manifest_path = store.store_dir / MANIFEST_FILE
             if manifest_path.exists():
-                with open(manifest_path, "r", encoding="utf-8") as fh:
+                with open(manifest_path, encoding="utf-8") as fh:
                     store.manifest = json.load(fh)
         return store
 

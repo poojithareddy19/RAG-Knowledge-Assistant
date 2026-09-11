@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Dict, List, Set
 
 from src.evaluation.metrics import (
     aggregate,
@@ -32,7 +31,7 @@ from src.evaluation.metrics import (
 from src.retrieval.retriever import Retriever
 
 
-def _gold_keys(docs: str, pages: str) -> Set[str]:
+def _gold_keys(docs: str, pages: str) -> set[str]:
     doc_list = [d.strip() for d in docs.split(";") if d.strip()]
     page_list = [p.strip() for p in pages.split(";") if p.strip()]
     keys = set()
@@ -42,9 +41,9 @@ def _gold_keys(docs: str, pages: str) -> Set[str]:
     return keys
 
 
-def load_gold(path: str | Path) -> List[dict]:
+def load_gold(path: str | Path) -> list[dict]:
     rows = []
-    with open(path, "r", encoding="utf-8", newline="") as fh:
+    with open(path, encoding="utf-8", newline="") as fh:
         for row in csv.DictReader(fh):
             rows.append(row)
     return rows
@@ -52,7 +51,7 @@ def load_gold(path: str | Path) -> List[dict]:
 
 def evaluate_retrieval(
     retriever: Retriever, gold_path: str | Path, k: int = 5
-) -> Dict:
+) -> dict:
     gold = load_gold(gold_path)
     per_question = []
 

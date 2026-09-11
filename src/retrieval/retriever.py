@@ -7,7 +7,6 @@ embedding and search steps is captured for the monitoring layer.
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Tuple
 
 from src.embeddings.embedding_model import get_embedding_model
 from src.utils.config import get_config
@@ -21,9 +20,9 @@ class Retriever:
         self.cfg = get_config().retrieval
         self.embedder = get_embedding_model()
 
-    def retrieve(self, question: str) -> Tuple[List[RetrievedChunk], Dict[str, float]]:
+    def retrieve(self, question: str) -> tuple[list[RetrievedChunk], dict[str, float]]:
         """Return (top_k chunks, timing_ms)."""
-        timing: Dict[str, float] = {}
+        timing: dict[str, float] = {}
 
         t0 = time.perf_counter()
         query_vec = self.embedder.embed_query(question)

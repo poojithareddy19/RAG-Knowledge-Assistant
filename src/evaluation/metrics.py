@@ -15,38 +15,38 @@ nDCG@K       discounted cumulative gain normalized by the ideal ordering.
 from __future__ import annotations
 
 import math
-from typing import Iterable, List, Sequence, Set
+from collections.abc import Iterable, Sequence
 
 
-def _relevance_flags(retrieved: Sequence[str], relevant: Set[str], k: int) -> List[int]:
+def _relevance_flags(retrieved: Sequence[str], relevant: set[str], k: int) -> list[int]:
     return [1 if doc in relevant else 0 for doc in retrieved[:k]]
 
 
-def recall_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> float:
+def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     if not relevant:
         return 0.0
     hits = sum(_relevance_flags(retrieved, relevant, k))
     return hits / len(relevant)
 
 
-def precision_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> float:
+def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     if k == 0:
         return 0.0
     return sum(_relevance_flags(retrieved, relevant, k)) / k
 
 
-def hit_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> float:
+def hit_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     return 1.0 if any(_relevance_flags(retrieved, relevant, k)) else 0.0
 
 
-def mrr(retrieved: Sequence[str], relevant: Set[str]) -> float:
+def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
     for i, doc in enumerate(retrieved, start=1):
         if doc in relevant:
             return 1.0 / i
     return 0.0
 
 
-def ndcg_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> float:
+def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     flags = _relevance_flags(retrieved, relevant, k)
     dcg = sum(rel / math.log2(i + 2) for i, rel in enumerate(flags))
     ideal_hits = min(len(relevant), k)

@@ -11,7 +11,6 @@ The model is loaded lazily and cached, so importing this module is cheap and the
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
 
 import numpy as np
 
@@ -43,13 +42,13 @@ class EmbeddingModel:
     def dimension(self) -> int:
         return int(self.model.get_sentence_embedding_dimension())
 
-    def embed_passages(self, texts: List[str]) -> np.ndarray:
+    def embed_passages(self, texts: list[str]) -> np.ndarray:
         return self._encode([self.passage_prefix + t for t in texts])
 
     def embed_query(self, text: str) -> np.ndarray:
         return self._encode([self.query_prefix + text])[0]
 
-    def _encode(self, texts: List[str]) -> np.ndarray:
+    def _encode(self, texts: list[str]) -> np.ndarray:
         vectors = self.model.encode(
             texts,
             batch_size=self.batch_size,

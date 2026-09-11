@@ -10,12 +10,11 @@ Supported: .pdf .docx .txt .md .markdown
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
 
-Segment = Tuple[int, str]  # (page_number, text)
+Segment = tuple[int, str]  # (page_number, text)
 
 
-def load_document(path: str | Path) -> List[Segment]:
+def load_document(path: str | Path) -> list[Segment]:
     """Dispatch on file extension. Raises ValueError on unsupported types."""
     path = Path(path)
     suffix = path.suffix.lower()
@@ -28,11 +27,11 @@ def load_document(path: str | Path) -> List[Segment]:
     raise ValueError(f"Unsupported file type: {suffix}")
 
 
-def _load_pdf(path: Path) -> List[Segment]:
+def _load_pdf(path: Path) -> list[Segment]:
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
-    segments: List[Segment] = []
+    segments: list[Segment] = []
     for i, page in enumerate(reader.pages, start=1):
         text = (page.extract_text() or "").strip()
         if text:
@@ -40,7 +39,7 @@ def _load_pdf(path: Path) -> List[Segment]:
     return segments
 
 
-def _load_docx(path: Path) -> List[Segment]:
+def _load_docx(path: Path) -> list[Segment]:
     import docx  # python-docx
 
     document = docx.Document(str(path))
@@ -48,7 +47,7 @@ def _load_docx(path: Path) -> List[Segment]:
     return [(0, body)] if body.strip() else []
 
 
-def _load_text(path: Path) -> List[Segment]:
+def _load_text(path: Path) -> list[Segment]:
     text = path.read_text(encoding="utf-8", errors="ignore").strip()
     return [(0, text)] if text else []
 

@@ -9,7 +9,6 @@ that small pool with the cross-encoder. Enable via ``retrieval.use_reranker``.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
 
 from src.utils.config import get_config
 from src.utils.schemas import RetrievedChunk
@@ -22,13 +21,13 @@ def _get_cross_encoder():
     return CrossEncoder(get_config().retrieval.reranker_model)
 
 
-def rerank(question: str, candidates: List[RetrievedChunk]) -> List[RetrievedChunk]:
+def rerank(question: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]:
     """Reorder candidates by cross-encoder relevance (descending)."""
     if not candidates:
         return candidates
     model = _get_cross_encoder()
     pairs = [(question, rc.chunk.text) for rc in candidates]
     scores = model.predict(pairs)
-    for rc, score in zip(candidates, scores):
+    for rc, score in zip(candidates, scores, strict=True):
         rc.score = float(score)
     return sorted(candidates, key=lambda rc: rc.score, reverse=True)

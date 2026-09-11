@@ -25,3 +25,19 @@ requests>=2.31
 
 # Testing
 pytest>=8.0
+
+psycopg[binary,pool]>=3.2
+pgvector>=0.3
+sqlparse>=0.5
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+scikit-learn>=1.5
+lightgbm>=4.3
+shap>=0.45
+matplotlib>=3.8
+fastapi>=0.111
+uvicorn[standard]>=0.30
+httpx>=0.27
+pytest>=8.0
+ruff>=0.5

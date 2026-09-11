@@ -10,17 +10,17 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from src.utils.config import get_config
 
 
-def load_records() -> List[Dict[str, Any]]:
+def load_records() -> list[dict[str, Any]]:
     path = Path(get_config().monitoring.log_file)
     if not path.exists():
         return []
     records = []
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
@@ -31,7 +31,7 @@ def load_records() -> List[Dict[str, Any]]:
     return records
 
 
-def summarize(records: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
+def summarize(records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     records = records if records is not None else load_records()
     n = len(records)
     if n == 0:
@@ -77,5 +77,5 @@ def summarize(records: List[Dict[str, Any]] | None = None) -> Dict[str, Any]:
     }
 
 
-def _mean(values: List[float]) -> float:
+def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0

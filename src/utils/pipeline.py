@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Dict, List
 
 from src.embeddings.embedding_model import get_embedding_model
 from src.generation.answer_generator import AnswerGenerator
@@ -36,7 +35,7 @@ class RAGService:
         self.generator = AnswerGenerator(self.retriever)
 
     # -- ingestion -----------------------------------------------------------
-    def ingest_file(self, file_path: str | Path, skip_duplicates: bool = True) -> Dict:
+    def ingest_file(self, file_path: str | Path, skip_duplicates: bool = True) -> dict:
         file_path = Path(file_path)
         doc_name = file_path.name
 
@@ -44,7 +43,7 @@ class RAGService:
             return {"doc_name": doc_name, "status": "skipped_duplicate", "chunks": 0}
 
         segments = load_document(file_path)
-        chunks: List[Chunk] = chunk_segments(doc_name, segments)
+        chunks: list[Chunk] = chunk_segments(doc_name, segments)
         if not chunks:
             return {"doc_name": doc_name, "status": "no_text", "chunks": 0}
 
@@ -78,7 +77,7 @@ class RAGService:
         return answer
 
     # -- knowledge base ------------------------------------------------------
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         return self.store.stats()
 
     def reset(self) -> None:

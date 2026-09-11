@@ -23,13 +23,12 @@ poorly calibrated).
 from __future__ import annotations
 
 from statistics import pvariance
-from typing import List
 
 from src.utils.config import get_config
 from src.utils.schemas import Confidence, RetrievedChunk
 
 
-def estimate_confidence(retrieved: List[RetrievedChunk]) -> Confidence:
+def estimate_confidence(retrieved: list[RetrievedChunk]) -> Confidence:
     cfg = get_config().confidence
     weights = cfg.weights
     floor = float(cfg.support_floor)

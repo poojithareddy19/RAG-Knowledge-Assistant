@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 import time
-from typing import List
 
 from src.generation.llm import BaseLLM, get_llm
 from src.generation.prompt import build_messages
@@ -67,7 +66,7 @@ def _is_provider_capacity_error(message: str) -> bool:
     return any(m in low for m in markers)
 
 
-def _build_retrieval_only_answer(sources: List[RetrievedChunk]) -> str:
+def _build_retrieval_only_answer(sources: list[RetrievedChunk]) -> str:
     """Return a useful fallback response from top retrieved passages."""
     if not sources:
         return DECLINE_MESSAGE

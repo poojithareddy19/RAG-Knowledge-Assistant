@@ -15,8 +15,6 @@ to a specific prompt (a lightweight form of prompt versioning).
 """
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from src.utils.schemas import RetrievedChunk
 
 PROMPT_VERSION = "v1"
@@ -32,7 +30,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_context_block(sources: List[RetrievedChunk]) -> str:
+def build_context_block(sources: list[RetrievedChunk]) -> str:
     parts = []
     for rc in sources:
         c = rc.chunk
@@ -41,7 +39,7 @@ def build_context_block(sources: List[RetrievedChunk]) -> str:
     return "\n\n".join(parts)
 
 
-def build_messages(question: str, sources: List[RetrievedChunk]) -> Tuple[str, str]:
+def build_messages(question: str, sources: list[RetrievedChunk]) -> tuple[str, str]:
     """Return (system_prompt, user_prompt)."""
     context = build_context_block(sources)
     user_prompt = (

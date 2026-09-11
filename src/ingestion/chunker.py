@@ -12,7 +12,6 @@ this file depends on it, so swapping in another splitter is a one-file change.
 from __future__ import annotations
 
 import re
-from typing import List
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -25,7 +24,7 @@ def _slug(doc_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", doc_name).strip("_")
 
 
-def chunk_segments(doc_name: str, segments: List[Segment]) -> List[Chunk]:
+def chunk_segments(doc_name: str, segments: list[Segment]) -> list[Chunk]:
     """Convert (page, text) segments into a flat list of Chunk objects."""
     cfg = get_config().ingestion
     splitter = RecursiveCharacterTextSplitter(
@@ -36,7 +35,7 @@ def chunk_segments(doc_name: str, segments: List[Segment]) -> List[Chunk]:
     )
 
     slug = _slug(doc_name)
-    chunks: List[Chunk] = []
+    chunks: list[Chunk] = []
     running_index = 0
 
     for page, text in segments:

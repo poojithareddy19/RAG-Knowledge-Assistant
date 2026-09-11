@@ -13,7 +13,6 @@ subclass + one line in ``get_llm``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict
 
 from src.utils.config import get_config
 
@@ -21,7 +20,7 @@ from src.utils.config import get_config
 @dataclass
 class LLMResponse:
     text: str
-    tokens: Dict[str, int] = field(default_factory=dict)
+    tokens: dict[str, int] = field(default_factory=dict)
 
 
 class BaseLLM:

@@ -19,10 +19,9 @@ Usage
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import yaml
 
@@ -52,7 +51,7 @@ class AttrDict(dict):
         self[key] = value
 
 
-def _apply_env_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_env_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
     """Override nested keys from ``SECTION__KEY`` environment variables."""
     for env_key, raw in os.environ.items():
         if "__" not in env_key:
@@ -87,7 +86,7 @@ def _coerce(value: str) -> Any:
 def get_config(config_path: str | None = None) -> AttrDict:
     """Load, merge and cache the configuration object."""
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
     data = _apply_env_overrides(data)
 
