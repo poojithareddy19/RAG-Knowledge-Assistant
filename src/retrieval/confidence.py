@@ -45,12 +45,16 @@ def estimate_confidence(retrieved: list[RetrievedChunk]) -> Confidence:
     # Variance of scores in [0,1] is at most 0.25; normalize against that.
     spread = 1.0 - min(1.0, pvariance(scores) / 0.25) if len(scores) > 1 else 1.0
 
-    raw = (
-        float(weights.mean_similarity) * mean_sim
-        + float(weights.support) * support
-        + float(weights.spread) * spread
-    )
-    score = max(0.0, min(1.0, raw))
+    score = combine_signals(
+    mean_sim=mean_sim,
+    support=support,
+    spread=spread,
+    weights={
+        "mean_similarity": float(weights.mean_similarity),
+        "support": float(weights.support),
+        "spread": float(weights.spread),
+    },
+)
 
     return Confidence(
         score=round(score, 4),
@@ -62,3 +66,31 @@ def estimate_confidence(retrieved: list[RetrievedChunk]) -> Confidence:
         },
         n_supporting=n_supporting,
     )
+
+MIN_MEAN_SIM = 0.28  # Hard floor: below this, do not answer at all
+
+
+def combine_signals(mean_sim, support, spread, weights):
+    """Combine retrieval signals into a 0-1 confidence score.
+
+    Multiplicative rather than additive: mean similarity is the primary
+    signal, and the other two can only modulate it, never rescue it.
+    """
+    if mean_sim < MIN_MEAN_SIM:
+        return 0.0
+
+    w_sim = weights.get("mean_similarity", 0.6)
+    w_sup = weights.get("support", 0.25)
+    w_spr = weights.get("spread", 0.15)
+
+    # Normalize secondary signals into a 0.5-1.0 multiplier band.
+    # They can penalize a good primary signal but cannot manufacture one.
+    secondary = (
+        w_sup * support + w_spr * spread
+    ) / max(w_sup + w_spr, 1e-9)
+
+    multiplier = 0.5 + 0.5 * secondary
+
+    score = (mean_sim**w_sim) * multiplier
+
+    return round(min(max(score, 0.0), 1.0), 4)

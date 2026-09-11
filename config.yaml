@@ -44,7 +44,7 @@ retrieval:
   top_k: 5
   # Fetch a larger candidate pool before optional reranking, then trim to top_k.
   fetch_k: 20
-  use_reranker: false        # cross-encoder reranker (see docs/design_decisions)
+  use_reranker: true      # cross-encoder reranker (see docs/design_decisions)
   reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 confidence:

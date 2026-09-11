@@ -22,12 +22,20 @@ def _get_cross_encoder():
 
 
 def rerank(question: str, candidates: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """Reorder candidates by cross-encoder relevance (descending)."""
+    """Reorder candidates by cross-encoder relevance without changing cosine scores."""
     if not candidates:
         return candidates
+
     model = _get_cross_encoder()
     pairs = [(question, rc.chunk.text) for rc in candidates]
     scores = model.predict(pairs)
-    for rc, score in zip(candidates, scores, strict=True):
-        rc.score = float(score)
-    return sorted(candidates, key=lambda rc: rc.score, reverse=True)
+
+    # Keep the original FAISS cosine similarity in rc.score.
+    # Use the cross-encoder score only to determine the new ordering.
+    ranked = sorted(
+        zip(candidates, scores, strict=True),
+        key=lambda pair: float(pair[1]),
+        reverse=True,
+    )
+
+    return [rc for rc, _ in ranked]
