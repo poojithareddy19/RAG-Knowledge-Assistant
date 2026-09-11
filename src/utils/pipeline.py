@@ -33,6 +33,18 @@ class RAGService:
         self.store = FaissVectorStore.load(dimension=self.embedder.dimension)
         self.retriever = Retriever(self.store)
         self.generator = AnswerGenerator(self.retriever)
+        #	src/utils/pipeline.py		(inside	RAGService.__init__)
+        backend	=	self.cfg.vectorstore.backend
+        if	backend	==	"pgvector":
+            from	src.vectorstore.pgvector_store	import	PgVectorStore
+            self.store	=	PgVectorStore(
+            table=self.cfg.vectorstore.table,
+            dimension=self.cfg.vectorstore.dimension,
+            )
+        else:
+            from	src.vectorstore.vectordb	import	VectorDB
+            self.store	=	VectorDB(dimension=self.cfg.vectorstore.dimension)
+
 
     # -- ingestion -----------------------------------------------------------
     def ingest_file(self, file_path: str | Path, skip_duplicates: bool = True) -> dict:
@@ -86,3 +98,4 @@ class RAGService:
     @staticmethod
     def supported_extensions() -> tuple:
         return SUPPORTED_EXTENSIONS
+
