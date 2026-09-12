@@ -37,8 +37,10 @@ embeddings:
   device: "cpu"              # "cuda" if a GPU is available
 
 vectorstore:
-  backend: "faiss"           # faiss | chroma  (faiss implemented in this build)
-  metric: "cosine"           # cosine (inner-product on normalized vectors)
+  backend: "pgvector"           # pgvector | faiss
+  metric: "cosine" 
+  table: "doc_chunks"
+  dimension: 384          # cosine (inner-product on normalized vectors)
 
 retrieval:
   top_k: 5

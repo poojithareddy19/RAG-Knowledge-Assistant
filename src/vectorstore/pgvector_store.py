@@ -121,3 +121,32 @@ class PgVectorStore:
             cur.execute(
                 f"TRUNCATE {self.table}"
             )
+    def stats(self) -> dict:
+        """Return statistics compatible with the FAISS vector store."""
+
+        with cursor(readonly=True) as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS chunks,
+                    COUNT(DISTINCT document) AS documents
+                FROM {self.table}
+                """
+            )
+            chunks, documents = cur.fetchone()
+
+            cur.execute(
+                f"""
+                SELECT DISTINCT document
+                FROM {self.table}
+                ORDER BY document
+                """
+            )
+            manifest = [row[0] for row in cur.fetchall()]
+
+        return {
+            "documents": int(documents),
+            "chunks": int(chunks),
+            "dimension": self.dimension,
+            "manifest": manifest,
+        }
