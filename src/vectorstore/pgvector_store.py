@@ -1,47 +1,66 @@
-# src/vectorstore/pgvector_store.py
+"""PostgreSQL + pgvector vector store.
+
+Implements the same public interface as FaissVectorStore so the rest of the
+application can switch vector backends without changing ingestion or retrieval.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 from pgvector.psycopg import register_vector
 
 from src.utils.db import cursor
+from src.utils.schemas import Chunk, RetrievedChunk
 
 
 class PgVectorStore:
-    """Postgres-backed vector store.
+    """PostgreSQL-backed vector store using pgvector cosine distance."""
 
-    Mirrors the FAISS store's interface.
-    """
-
-    def __init__(self, table="doc_chunks", dimension=384):
+    def __init__(self, table: str = "doc_chunks", dimension: int = 384) -> None:
         self.table = table
         self.dimension = dimension
 
-    def add(self, records):
-        """Add document chunks and their embeddings to PostgreSQL.
+    # -- write ---------------------------------------------------------------
 
-        records: list of dicts with:
-            document, page, chunk_index, content, embedding
-        """
-        rows = []
+    def add(
+        self,
+        chunks: list[Chunk],
+        vectors: np.ndarray,
+        embedding_model: str,
+    ) -> None:
+        """Add chunks and their embeddings to PostgreSQL."""
 
-        for record in records:
-            vec = np.asarray(
-                record["embedding"],
-                dtype=np.float32,
+        if len(chunks) == 0:
+            return
+
+        vectors = np.asarray(vectors, dtype=np.float32)
+
+        if vectors.ndim != 2:
+            raise ValueError(
+                f"Expected 2D vectors, got shape {vectors.shape}"
             )
 
-            if vec.shape[0] != self.dimension:
-                raise ValueError(
-                    f"expected {self.dimension} dims, got {vec.shape[0]}"
-                )
+        if vectors.shape[0] != len(chunks):
+            raise ValueError(
+                f"{len(chunks)} chunks but {vectors.shape[0]} vectors"
+            )
 
+        if vectors.shape[1] != self.dimension:
+            raise ValueError(
+                f"Vector dim {vectors.shape[1]} != store dimension "
+                f"{self.dimension}"
+            )
+
+        rows = []
+
+        for chunk, vector in zip(chunks, vectors, strict=True):
             rows.append(
                 (
-                    record["document"],
-                    record.get("page"),
-                    record.get("chunk_index"),
-                    record["content"],
-                    vec,
+                    chunk.doc_name,
+                    chunk.page,
+                    self._chunk_index(chunk),
+                    chunk.text,
+                    vector,
                 )
             )
 
@@ -55,26 +74,38 @@ class PgVectorStore:
             register_vector(cur.connection)
             cur.executemany(sql, rows)
 
-        return len(rows)
+    def contains(self, doc_name: str) -> bool:
+        """Return True when at least one chunk from the document exists."""
 
-    def search(self, query_vector, k=5, document=None):
-        """Search by cosine similarity.
+        with cursor(readonly=True) as cur:
+            cur.execute(
+                f"""
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM {self.table}
+                    WHERE document = %s
+                )
+                """,
+                (doc_name,),
+            )
+            return bool(cur.fetchone()[0])
 
-        Returns hits with a similarity score between 0 and 1.
-        """
-        vec = np.asarray(
-            query_vector,
-            dtype=np.float32,
-        )
+    # -- read ----------------------------------------------------------------
 
-        where = ""
-        params = [vec]
+    def search(
+        self,
+        query_vector: np.ndarray,
+        k: int,
+    ) -> list[RetrievedChunk]:
+        """Search by cosine similarity."""
 
-        if document:
-            where = "WHERE document = %s"
-            params.append(document)
+        vector = np.asarray(query_vector, dtype=np.float32).reshape(-1)
 
-        params.extend([vec, k])
+        if vector.shape[0] != self.dimension:
+            raise ValueError(
+                f"Query dim {vector.shape[0]} != store dimension "
+                f"{self.dimension}"
+            )
 
         sql = f"""
             SELECT
@@ -85,44 +116,39 @@ class PgVectorStore:
                 content,
                 1 - (embedding <=> %s) AS similarity
             FROM {self.table}
-            {where}
             ORDER BY embedding <=> %s
             LIMIT %s
         """
 
         with cursor(readonly=True) as cur:
             register_vector(cur.connection)
-            cur.execute(sql, params)
+            cur.execute(sql, (vector, vector, k))
             rows = cur.fetchall()
 
-        return [
-            {
-                "chunk_id": row[0],
-                "document": row[1],
-                "page": row[2],
-                "chunk_index": row[3],
-                "content": row[4],
-                "score": float(row[5]),
-            }
-            for row in rows
-        ]
+        results: list[RetrievedChunk] = []
 
-    def count(self):
-        """Return the number of stored document chunks."""
-        with cursor(readonly=True) as cur:
-            cur.execute(
-                f"SELECT count(*) FROM {self.table}"
+        for rank, row in enumerate(rows, start=1):
+            chunk = Chunk(
+                chunk_id=str(row[0]),
+                doc_name=row[1],
+                page=int(row[2] or 0),
+                text=row[4],
             )
-            return cur.fetchone()[0]
 
-    def clear(self):
-        """Remove all document chunks."""
-        with cursor() as cur:
-            cur.execute(
-                f"TRUNCATE {self.table}"
+            results.append(
+                RetrievedChunk(
+                    chunk=chunk,
+                    score=float(row[5]),
+                    rank=rank,
+                )
             )
+
+        return results
+
+    # -- metadata ------------------------------------------------------------
+
     def stats(self) -> dict:
-        """Return statistics compatible with the FAISS vector store."""
+        """Return statistics compatible with FaissVectorStore."""
 
         with cursor(readonly=True) as cur:
             cur.execute(
@@ -150,3 +176,25 @@ class PgVectorStore:
             "dimension": self.dimension,
             "manifest": manifest,
         }
+
+    # -- persistence ---------------------------------------------------------
+
+    def save(self) -> None:
+        """No-op because PostgreSQL persists writes immediately."""
+
+    def reset(self) -> None:
+        """Remove all indexed document chunks."""
+
+        with cursor() as cur:
+            cur.execute(f"TRUNCATE {self.table}")
+
+    # -- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _chunk_index(chunk: Chunk) -> int:
+        """Extract the chunk index from a standard chunk id when possible."""
+
+        try:
+            return int(chunk.chunk_id.rsplit("::c", 1)[1])
+        except (IndexError, ValueError):
+            return 0

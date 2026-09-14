@@ -40,7 +40,19 @@ vectorstore:
   backend: "pgvector"           # pgvector | faiss
   metric: "cosine" 
   table: "doc_chunks"
-  dimension: 384          # cosine (inner-product on normalized vectors)
+  dimension: 384 
+router:
+  enabled: true
+  fallback: "documents"
+
+sql:
+  allowed_tables:
+    - "floats"
+    - "profiles"
+    - "measurements"
+  max_rows: 5000
+  default_limit: 500
+  timeout_ms: 5000         # cosine (inner-product on normalized vectors)
 
 retrieval:
   top_k: 5

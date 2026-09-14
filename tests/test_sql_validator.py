@@ -2,7 +2,6 @@ import pytest
 
 from src.sqlgen.validator import SQLRejected, validate
 
-
 ALLOWED = ["floats", "profiles", "measurements"]
 
 

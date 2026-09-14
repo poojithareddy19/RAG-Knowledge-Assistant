@@ -5,7 +5,6 @@ import httpx
 
 from src.sqlgen.schema_context import build_context
 
-
 SYSTEM = """You write PostgreSQL SELECT queries.
 Rules:
 - Output exactly one SQL statement and nothing else. No prose, no markdown.

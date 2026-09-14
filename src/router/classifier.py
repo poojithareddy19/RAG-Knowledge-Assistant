@@ -4,7 +4,6 @@ import re
 
 import httpx
 
-
 ROUTES = ("documents", "data", "chart")
 
 

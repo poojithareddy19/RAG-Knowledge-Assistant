@@ -21,5 +21,32 @@
       timeout: 3s
       retries: 10
 
+  api:
+    build: .
+    container_name: gda_api
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    environment:
+      DATABASE__URL: postgresql://gda:gda_local_pw@db:5432/gda
+      DATABASE__READONLY_URL: postgresql://gda_ro:gda_ro_pw@db:5432/gda
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      GENERATION__PROVIDER: ollama
+      GENERATION__MODEL: llama3.1:latest
+      VECTORSTORE__BACKEND: pgvector
+      HF_HOME: /models
+
+    volumes:
+      - hfcache:/models
+
+    ports:
+      - "8000:8000"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   pgdata:
+  hfcache:

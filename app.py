@@ -157,7 +157,65 @@ def _page_ask(cfg):
     if ans.prompt:
         with st.expander("🧾 Exact prompt sent to the LLM"):
             st.code(ans.prompt)
+def _page_ocean_data(cfg):
+    st.title("🌊 Ocean Data")
+    st.caption(
+        "Ask about ARGO measurements. The SQL is shown and validated."
+    )
 
+    svc = get_service()
+
+    question = st.text_input(
+        "Question",
+        placeholder=(
+            "average surface temperature per year in the Arabian Sea"
+        ),
+    )
+
+    if not st.button("Ask") or not question:
+        return
+
+    with st.spinner("Routing, generating SQL, running query..."):
+        result = svc.ask(question)
+
+    st.write(
+        f"**Route:** `{result['route']}` "
+        f"(decided by `{result['route_decided_by']}`)"
+    )
+
+    if result.get("refused"):
+        st.warning(result["answer"])
+
+        with st.expander("SQL the model produced (rejected)"):
+            st.code(
+                result.get("generated_sql", ""),
+                language="sql",
+            )
+        return
+
+    st.success(result["answer"])
+
+    if result.get("chart_png"):
+        st.image(result["chart_png"])
+
+    if result.get("rows"):
+        st.dataframe(
+            pd.DataFrame(
+                result["rows"],
+                columns=result["columns"],
+            ),
+            use_container_width=True,
+        )
+
+    with st.expander("Generated SQL and timing"):
+        st.code(
+            result["generated_sql"],
+            language="sql",
+        )
+        st.write(
+            f"{result['row_count']} rows "
+            f"in {result['elapsed_ms']} ms"
+        )
 
 def _page_evaluation(cfg):
     st.title("📈 Evaluation")
@@ -233,9 +291,8 @@ PAGES = {
     "📂 Upload Documents": _page_upload,
     "📚 Knowledge Base": _page_knowledge_base,
     "💬 Ask Questions": _page_ask,
+    "🌊 Ocean Data": _page_ocean_data,
     "📈 Evaluation": _page_evaluation,
-    "📊 Monitoring": _page_monitoring,
-    "⚙️ Settings": _page_settings,
 }
 
 

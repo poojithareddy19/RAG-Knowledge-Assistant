@@ -3,7 +3,7 @@
 """Generate synthetic ARGO-shaped data with a known warming trend."""
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 
@@ -36,7 +36,7 @@ START = datetime(
     2005,
     1,
     1,
-    tzinfo=timezone.utc,
+    tzinfo=UTC,
 )
 
 
@@ -102,7 +102,7 @@ def main(n_floats=40, cycles_per_float=60):
                     "APEX",
                     "INCOIS",
                     START.date(),
-                    datetime.now(timezone.utc).date(),
+                    datetime.now(UTC).date(),
                 ),
             )
 
@@ -114,7 +114,7 @@ def main(n_floats=40, cycles_per_float=60):
 
                 when += timedelta(days=10)
 
-                if when > datetime.now(timezone.utc):
+                if when > datetime.now(UTC):
                     break
 
                 lat = random.uniform(-30, 22)

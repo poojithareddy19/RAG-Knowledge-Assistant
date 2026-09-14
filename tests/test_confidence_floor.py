@@ -1,6 +1,5 @@
 from src.retrieval.confidence import combine_signals
 
-
 WEIGHTS = {
     "mean_similarity": 0.6,
     "support": 0.25,

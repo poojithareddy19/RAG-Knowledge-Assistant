@@ -3,7 +3,10 @@
 import os
 from contextlib import contextmanager
 
+from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
+
+load_dotenv()
 
 _pools = {}
 
@@ -62,3 +65,8 @@ def fetch_all(sql, params=None, readonly=True, timeout_ms=5000):
         cur.execute(sql, params or ())
         cols = [d.name for d in cur.description]
         return cols, cur.fetchall()
+def close_pools():
+    """Close all database connection pools."""
+    for pool in _pools.values():
+        pool.close()
+    _pools.clear()

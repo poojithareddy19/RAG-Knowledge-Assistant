@@ -2,7 +2,6 @@ import re
 
 import sqlparse
 
-
 FORBIDDEN = {
     "insert",
     "update",
