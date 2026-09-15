@@ -1,11 +1,18 @@
+"""Generate safe PostgreSQL SELECT statements with optional caching."""
+
+from __future__ import annotations
+
 import os
 import re
 
 import httpx
 
 from src.sqlgen.schema_context import build_context
+from src.utils import cache
+
 
 SYSTEM = """You write PostgreSQL SELECT queries.
+
 Rules:
 - Output exactly one SQL statement and nothing else. No prose, no markdown.
 - SELECT only. Never INSERT, UPDATE, DELETE, DROP, ALTER or CREATE.
@@ -15,38 +22,71 @@ Rules:
 UNANSWERABLE
 """
 
-FENCE = re.compile(r"```(?:sql)?(.*?)```", re.S | re.I)
+FENCE = re.compile(
+    r"```(?:sql)?(.*?)```",
+    re.S | re.I,
+)
 
 
-def _clean(text):
-    m = FENCE.search(text)
-    if m:
-        text = m.group(1)
+def _clean(text: str) -> str:
+    """Remove markdown fences and trailing semicolons."""
+
+    match = FENCE.search(text)
+
+    if match:
+        text = match.group(1)
+
     return text.strip().rstrip(";").strip()
 
 
 def generate_sql(
-    question,
-    model=None,
-    include_examples=True,
-    timeout=90,
-):
+    question: str,
+    model: str | None = None,
+    include_examples: bool = True,
+    timeout: int = 90,
+    use_cache: bool = True,
+    return_cache_flag: bool = False,
+) -> str | tuple[str, bool]:
+    """Generate one SQL statement for a question.
+
+    ``use_cache=False`` is useful for evaluation because cached responses
+    would make latency measurements misleading.
+    """
+
     base = os.environ.get(
         "OLLAMA_BASE_URL",
         "http://localhost:11434",
     )
+
     model = model or os.environ.get(
         "GENERATION__MODEL",
-        "llama3.1:8b",
+        "llama3.1:latest",
     )
+
+    if use_cache:
+        hit = cache.get(
+            question,
+            model,
+            include_examples,
+        )
+
+        if hit is not None:
+            return (
+                (hit, True)
+                if return_cache_flag
+                else hit
+            )
 
     prompt = (
-        f"{SYSTEM}\n\n=== SCHEMA ===\n"
+        f"{SYSTEM}\n\n"
+        f"=== SCHEMA ===\n"
         f"{build_context(include_examples)}\n\n"
-        f"=== QUESTION ===\n{question}\n\nSQL:"
+        f"=== QUESTION ===\n"
+        f"{question}\n\n"
+        f"SQL:"
     )
 
-    r = httpx.post(
+    response = httpx.post(
         f"{base}/api/generate",
         json={
             "model": model,
@@ -59,6 +99,24 @@ def generate_sql(
         },
         timeout=timeout,
     )
-    r.raise_for_status()
 
-    return _clean(r.json()["response"])
+    response.raise_for_status()
+
+    sql = _clean(
+        response.json()["response"]
+    )
+
+    # Cache successful SQL, including UNANSWERABLE decisions.
+    if use_cache and sql:
+        cache.put(
+            question,
+            model,
+            sql,
+            include_examples,
+        )
+
+    return (
+        (sql, False)
+        if return_cache_flag
+        else sql
+    )

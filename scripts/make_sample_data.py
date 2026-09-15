@@ -75,7 +75,7 @@ def temp_at_depth(surface, pressure):
     )
 
 
-def main(n_floats=40, cycles_per_float=60):
+def main(n_floats=40, cycles_per_float=730):
     """Generate synthetic floats, profiles, and measurements."""
 
     with cursor() as cur:

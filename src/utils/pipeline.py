@@ -1,20 +1,29 @@
 """Pipeline service facade.
 
-One object that wires the whole system together so callers (Streamlit, tests,
-the FastAPI layer) never touch individual modules. Responsibilities:
+One object that wires the whole system together so callers
+(Streamlit, FastAPI, tests) never touch individual modules.
 
-  * build the vector store chosen in config (FAISS or pgvector)
-  * ingest files: load -> chunk -> embed -> add -> persist
-  * route a question to documents, data or chart, then delegate
-  * answer from documents through the AnswerGenerator
-  * answer from data through generate -> validate -> execute
-  * expose knowledge-base stats
+Responsibilities:
+- build the configured vector store
+- ingest files: load -> chunk -> embed -> add -> persist
+- route a question to documents, data or chart
+- log every interaction exactly once
 
-Kept deliberately thin: it orchestrates, it doesn't implement.
+The service exposes two public query methods:
+
+    ask(question) -> Answer
+        Documents-only path returning the typed Answer dataclass.
+        Used by the existing "Ask Questions" page.
+
+    answer(question) -> dict
+        Routed path returning a uniform dictionary.
+        Used by the Ocean Data page and FastAPI.
 """
+
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 
 from src.charts.builder import render
@@ -22,86 +31,148 @@ from src.embeddings.embedding_model import get_embedding_model
 from src.generation.answer_generator import AnswerGenerator
 from src.ingestion.chunker import chunk_segments
 from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
+from src.monitoring.logger import log_interaction
 from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql
 from src.sqlgen.validator import SQLRejected, validate
 from src.utils.config import get_config
-from src.utils.schemas import Chunk
-
-
-def _to_dict(result):
-    """Answer objects, pydantic models and dataclasses all become plain dicts."""
-    if isinstance(result, dict):
-        return dict(result)
-    for attr in ("model_dump", "dict", "_asdict"):
-        fn = getattr(result, attr, None)
-        if callable(fn):
-            return dict(fn())
-    return dict(vars(result))
+from src.utils.schemas import Answer, Chunk
 
 
 class RAGService:
+    """Facade that orchestrates ingestion, retrieval, routing and queries."""
+
     def __init__(self) -> None:
         self.cfg = get_config()
         self.embedder = get_embedding_model()
+        self.store = self._build_store()
 
-        backend = self.cfg.vectorstore.backend
+        # The retriever and generator keep a reference to the store,
+        # so the store must be created before them.
+        self.retriever = Retriever(self.store)
+        self.generator = AnswerGenerator(self.retriever)
+
+    def _build_store(self):
+        """Build the configured vector-store backend."""
+        backend = self.cfg.vectorstore.get(
+            "backend",
+            "faiss",
+        )
 
         if backend == "pgvector":
             from src.vectorstore.pgvector_store import PgVectorStore
 
-            self.store = PgVectorStore(
-                table=self.cfg.vectorstore.table,
+            return PgVectorStore(
                 dimension=self.cfg.vectorstore.dimension,
+                table=self.cfg.vectorstore.table,
             )
-        else:
+
+        if backend == "faiss":
             from src.vectorstore.vectordb import FaissVectorStore
 
-            self.store = FaissVectorStore.load(
+            return FaissVectorStore.load(
                 dimension=self.embedder.dimension
             )
 
-        self.retriever = Retriever(self.store)
-        self.generator = AnswerGenerator(self.retriever)
+        raise ValueError(
+            f"unknown vectorstore.backend {backend!r}; "
+            "expected 'faiss' or 'pgvector'"
+        )
 
-    # -- ingestion -----------------------------------------------------------
-    def ingest_file(self, file_path: str | Path, skip_duplicates: bool = True) -> dict:
+    # ------------------------------------------------------------------
+    # Ingestion
+    # ------------------------------------------------------------------
+
+    def ingest_file(
+        self,
+        file_path: str | Path,
+        skip_duplicates: bool = True,
+    ) -> dict:
+        """Load, chunk, embed and persist one document."""
         file_path = Path(file_path)
         doc_name = file_path.name
 
-        if skip_duplicates and self.store.contains(doc_name):
-            return {"doc_name": doc_name, "status": "skipped_duplicate", "chunks": 0}
+        if (
+            skip_duplicates
+            and self.store.contains(doc_name)
+        ):
+            return {
+                "doc_name": doc_name,
+                "status": "skipped_duplicate",
+                "chunks": 0,
+            }
 
         segments = load_document(file_path)
-        chunks: list[Chunk] = chunk_segments(doc_name, segments)
-        if not chunks:
-            return {"doc_name": doc_name, "status": "no_text", "chunks": 0}
 
-        vectors = self.embedder.embed_passages([c.text for c in chunks])
-        self.store.add(chunks, vectors, embedding_model=self.embedder.model_name)
+        chunks: list[Chunk] = chunk_segments(
+            doc_name,
+            segments,
+        )
+
+        if not chunks:
+            return {
+                "doc_name": doc_name,
+                "status": "no_text",
+                "chunks": 0,
+            }
+
+        vectors = self.embedder.embed_passages(
+            [chunk.text for chunk in chunks]
+        )
+
+        self.store.add(
+            chunks,
+            vectors,
+            embedding_model=self.embedder.model_name,
+        )
+
         self.store.save()
 
         # Keep a copy of the raw file for provenance.
         raw_dir = Path(self.cfg.paths.raw_dir)
-        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
         try:
-            if Path(file_path).resolve() != (raw_dir / doc_name).resolve():
-                shutil.copy2(file_path, raw_dir / doc_name)
+            destination = raw_dir / doc_name
+
+            if file_path.resolve() != destination.resolve():
+                shutil.copy2(
+                    file_path,
+                    destination,
+                )
         except Exception:
+            # Provenance copy should never break ingestion.
             pass
 
         return {
             "doc_name": doc_name,
             "status": "indexed",
-            "pages": max((c.page for c in chunks), default=0),
+            "pages": max(
+                (
+                    chunk.page
+                    for chunk in chunks
+                ),
+                default=0,
+            ),
             "chunks": len(chunks),
         }
 
-    # -- querying ------------------------------------------------------------
-    def answer(self, question: str) -> dict:
-        """Single entry point. Routes, then delegates."""
+    # ------------------------------------------------------------------
+    # Querying
+    # ------------------------------------------------------------------
+
+    def answer(
+        self,
+        question: str,
+    ) -> dict:
+        """Route, delegate and log one query exactly once."""
+        started = time.perf_counter()
+
         chosen, how = pick_route(
             question,
             fallback=self.cfg.router.fallback,
@@ -109,39 +180,81 @@ class RAGService:
         )
 
         if chosen == "documents":
-            result = self.answer_from_documents(question)
+            result = self.answer_from_documents(
+                question
+            )
         else:
-            result = self.answer_from_data(question, want_chart=(chosen == "chart"))
+            result = self.answer_from_data(
+                question,
+                want_chart=(chosen == "chart"),
+            )
 
         result["route"] = chosen
         result["route_decided_by"] = how
 
-        logger = getattr(self, "logger", None)
-        if logger is not None:
-            logger.log_interaction(question, result)
+        result.setdefault(
+            "elapsed_ms",
+            round(
+                (
+                    time.perf_counter()
+                    - started
+                )
+                * 1000,
+                1,
+            ),
+        )
+
+        try:
+            log_interaction(
+                result,
+                question=question,
+            )
+        except Exception:
+            # Logging must never break the user path.
+            pass
 
         return result
 
-    def answer_from_documents(self, question: str) -> dict:
-        """Documents only. No routing here: answer() decides the route."""
-        result = _to_dict(self.generator.answer(question))
+    def answer_from_documents(
+        self,
+        question: str,
+    ) -> dict:
+        """Answer a question using the document retrieval pipeline."""
+        answer = self.generator.answer(question)
 
-        # Answer uses `sources`; the API contract calls them citations.
-        if "citations" not in result and "sources" in result:
-            result["citations"] = [
-                s if isinstance(s, dict) else _to_dict(s)
-                for s in (result["sources"] or [])
-            ]
+        return {
+            "answer": answer.answer,
+            "answered": answer.answered,
+            "refused": not answer.answered,
+            "confidence": answer.confidence.score,
+            "confidence_percent": answer.confidence.percent,
+            "reason": answer.reason,
+            "sources": [
+                source.to_dict()
+                for source in answer.sources
+            ],
+            "latency_ms": answer.latency_ms,
+            "provider": answer.provider,
+            "model": answer.model,
+            "embedding_model": answer.embedding_model,
+            "error": answer.error,
+        }
 
-        result.setdefault("answer", "")
-        result.setdefault("confidence", 0.0)
-        result.setdefault("refused", not result.get("answered", True))
-        result.setdefault("citations", [])
-        return result
-
-    def answer_from_data(self, question: str, want_chart: bool = False) -> dict:
-        """Text to SQL, validated, executed. Numbers come from the database."""
-        raw_sql = generate_sql(question)
+    def answer_from_data(
+        self,
+        question: str,
+        want_chart: bool = False,
+    ) -> dict:
+        """Generate, validate and execute a SQL query."""
+        raw_sql, cached = generate_sql(
+            question,
+            model=self.cfg.sql.get("model"),
+            use_cache=self.cfg.cache.get(
+                "enabled",
+                True,
+            ),
+            return_cache_flag=True,
+        )
 
         try:
             safe_sql = validate(
@@ -152,51 +265,127 @@ class RAGService:
             )
         except SQLRejected as exc:
             return {
-                "answer": ("I could not answer that from the measurements "
-                           f"database. Reason: {exc}"),
+                "answer": (
+                    "I could not answer that from the "
+                    "measurements database. "
+                    f"Reason: {exc}"
+                ),
+                "answered": False,
                 "refused": True,
                 "generated_sql": raw_sql,
+                "sql_cached": cached,
                 "confidence": 0.0,
+                "reason": str(exc),
             }
 
-        result = run_query(safe_sql, timeout_ms=self.cfg.sql.timeout_ms)
+        try:
+            result = run_query(
+                safe_sql,
+                timeout_ms=self.cfg.sql.timeout_ms,
+            )
+        except Exception as exc:
+            return {
+                "answer": (
+                    "The query was valid but failed to run: "
+                    f"{exc}"
+                ),
+                "answered": False,
+                "refused": True,
+                "generated_sql": safe_sql,
+                "sql_cached": cached,
+                "confidence": 0.0,
+                "error": str(exc),
+            }
 
-        png, kind = (None, None)
+        png = None
+        kind = None
+
         if want_chart:
-            png, kind = render(result, title=question)
+            png, kind = render(
+                result,
+                title=question,
+            )
 
         return {
-            "answer": self._summarise_rows(question, result),
+            "answer": self._summarise_rows(result),
+            "answered": True,
             "refused": False,
             "generated_sql": safe_sql,
+            "sql_cached": cached,
             "columns": result["columns"],
             "rows": result["rows"][:100],
             "row_count": result["row_count"],
             "elapsed_ms": result["elapsed_ms"],
             "chart_png": png,
             "chart_kind": kind,
-            # confidence is 1.0 when a validated query returned rows: the answer
-            # comes from the database, not from the model's memory
-            "confidence": 1.0 if result["row_count"] else 0.0,
+            # For documents, confidence measures retrieval quality.
+            # For SQL, it indicates whether a validated query returned rows.
+            "confidence": (
+                1.0
+                if result["row_count"]
+                else 0.0
+            ),
         }
 
-    def _summarise_rows(self, question: str, result: dict) -> str:
-        """One short sentence describing the result set, no invented numbers."""
+    @staticmethod
+    def _summarise_rows(
+        result: dict,
+    ) -> str:
+        """Create a concise summary without inventing numbers."""
         n = result["row_count"]
-        if n == 0:
-            return "The query ran successfully but returned no rows."
-        if n == 1 and len(result["columns"]) == 1:
-            return f"{result['columns'][0]}: {result['rows'][0][0]}"
-        return (f"{n} row(s) returned with columns "
-                f"{', '.join(result['columns'])}. See the table below.")
 
-    # -- knowledge base ------------------------------------------------------
+        if n == 0:
+            return (
+                "The query ran successfully "
+                "but returned no rows."
+            )
+
+        if (
+            n == 1
+            and len(result["columns"]) == 1
+        ):
+            return (
+                f"{result['columns'][0]}: "
+                f"{result['rows'][0][0]}"
+            )
+
+        return (
+            f"{n} row(s) returned with columns "
+            f"{', '.join(result['columns'])}. "
+            "See the table below."
+        )
+
+    def ask(
+        self,
+        question: str,
+    ) -> Answer:
+        """Documents-only path returning the typed Answer."""
+        answer = self.generator.answer(question)
+
+        try:
+            log_interaction(
+                answer,
+                question=question,
+            )
+        except Exception:
+            # Logging must never break the user path.
+            pass
+
+        return answer
+
+    # ------------------------------------------------------------------
+    # Knowledge base
+    # ------------------------------------------------------------------
+
     def stats(self) -> dict:
+        """Return vector-store statistics."""
         return self.store.stats()
 
     def reset(self) -> None:
+        """Reset the configured vector store."""
         self.store.reset()
 
     @staticmethod
     def supported_extensions() -> tuple:
+        """Return supported document extensions."""
         return SUPPORTED_EXTENSIONS
