@@ -14,6 +14,29 @@ has to be re-labelled when the database changes.
 
 Rows are compared as a multiset with floats rounded, so column order and row
 order do not matter but values and shape do.
+
+Writing a question for the gold set
+-----------------------------------
+
+Three rules, each learned from a question that scored a model wrong for the
+question's fault rather than the model's:
+
+1. **A superlative needs a unique winner in the data.** "Which float recorded
+   the most profiles?" is unanswerable when every float has exactly 730. The
+   reference picks one arbitrarily, the model picks another, and both are
+   right. Check for ties before adding a "most", "top" or "first" question.
+
+2. **The question must imply one result shape.** Comparison is shape
+   sensitive, so "which float is warmest" is a bad question when the answer
+   could reasonably be an id or an id and a temperature. Ask for the id.
+
+3. **One reading only.** "Average surface temperature for each calendar
+   month" means twelve seasonal averages to one reader and a monthly time
+   series to another. Say which.
+
+Fixing a question because the model got it wrong is tuning the benchmark.
+Fixing one because it has no single right answer is maintenance. Only the
+second is allowed.
 """
 
 from __future__ import annotations
@@ -173,13 +196,19 @@ def evaluate_file(
     include_examples=True,
     use_cache=False,
     use_semantic=True,
+    progress=None,
 ):
-    """Score every question in the gold set."""
+    """Score every question in the gold set.
+
+    ``progress`` is called with ``(index, total, record)`` after each question.
+    A full run is dominated by model latency and takes tens of minutes, so a
+    caller that reports nothing until the end is unusable.
+    """
     gold = pd.read_csv(path)
 
     records = []
 
-    for _, row in gold.iterrows():
+    for position, (_, row) in enumerate(gold.iterrows(), start=1):
         record = evaluate_one(
             row["question"],
             expected_sql=row.get("expected_sql"),
@@ -191,6 +220,9 @@ def evaluate_file(
         record["bucket"] = row.get("bucket", "unknown")
 
         records.append(record)
+
+        if progress:
+            progress(position, len(gold), record)
 
     df = pd.DataFrame(records)
 
@@ -230,12 +262,33 @@ def _rate(series):
     return round(float(series.mean()), 3) if len(series) else None
 
 
+def _print_progress(position, total, record):
+    if record["bucket"] == "unanswerable":
+        verdict = "REFUSED  " if not record["validated"] else "ANSWERED!"
+    else:
+        verdict = "MATCH    " if record["matched"] else "WRONG    "
+
+    print(
+        f"[{position:2d}/{total}] {verdict} "
+        f"{record['latency_ms'] / 1000:5.1f}s  "
+        f"{record['question'][:58]}",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
 
     load_dotenv()
 
-    summary, buckets, detail = evaluate_file()
+    # Cached so an interrupted run resumes instead of starting over. Pass
+    # use_cache=False when the latency numbers are what you care about.
+    summary, buckets, detail = evaluate_file(
+        use_cache=True,
+        progress=_print_progress,
+    )
+
+    print()
 
     for key, value in summary.items():
         print(f"{key:24s} {value}")
