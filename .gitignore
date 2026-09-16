@@ -12,6 +12,7 @@ venv/
 data/raw/*
 data/processed/*
 data/vector_store/*
+data/cache/*
 logs/*
 !**/.gitkeep
 
@@ -19,3 +20,12 @@ logs/*
 .DS_Store
 .idea/
 .vscode/
+
+# Local docker overrides
+docker-compose.override.yml
+
+# Evaluation run output. A run is reproducible from the gold set, and the
+# numbers worth keeping are written up in README.md rather than left as a CSV
+# nobody can date.
+eval_*.log
+data/evaluation/sql_eval_*.csv
