@@ -1,9 +1,48 @@
-question,bucket,expected_sql_shape,expected_value
-How many floats are in the database?,easy,count,
-What is the average surface temperature in the Arabian Sea?,join,avg,
-Average surface temperature per year per region,join,groupby,
-Which region warmed the most from its first to its last year?,window,window,
-Year over year change in mean surface temperature,window,lag,
-What is the average rainfall in Chennai?,unanswerable,none,
-List the five floats with the most profiles,join,groupby,
-Median salinity per region,window,percentile,
+question,bucket,expected_sql
+How many floats are in the database?,easy,"SELECT count(*) FROM floats"
+How many profiles are there in total?,easy,"SELECT count(*) FROM profiles"
+How many measurements have been recorded?,easy,"SELECT count(*) FROM measurements"
+What is the earliest observation date?,easy,"SELECT min(obs_time) FROM profiles"
+What is the latest observation date?,easy,"SELECT max(obs_time) FROM profiles"
+List the distinct regions,easy,"SELECT DISTINCT region FROM profiles ORDER BY region"
+How many distinct pressure levels are recorded?,easy,"SELECT count(DISTINCT pressure_dbar) FROM measurements"
+What is the deepest pressure recorded?,easy,"SELECT max(pressure_dbar) FROM measurements"
+How many profiles were recorded in 2020?,filter,"SELECT count(*) FROM profiles WHERE obs_time >= '2020-01-01' AND obs_time < '2021-01-01'"
+How many profiles were recorded in the Arabian Sea?,filter,"SELECT count(*) FROM profiles WHERE region = 'Arabian Sea'"
+What is the average surface temperature?,filter,"SELECT avg(temperature_c) FROM measurements WHERE pressure_dbar < 10 AND qc_flag = 1 AND temperature_c IS NOT NULL"
+How many measurements are deeper than 1000 decibars?,filter,"SELECT count(*) FROM measurements WHERE pressure_dbar > 1000"
+How many profiles were recorded between 2010 and 2015?,filter,"SELECT count(*) FROM profiles WHERE obs_time >= '2010-01-01' AND obs_time < '2016-01-01'"
+What is the average salinity below 1000 decibars?,filter,"SELECT avg(salinity_psu) FROM measurements WHERE pressure_dbar > 1000 AND qc_flag = 1 AND salinity_psu IS NOT NULL"
+What is the highest surface temperature recorded?,filter,"SELECT max(temperature_c) FROM measurements WHERE pressure_dbar < 10 AND qc_flag = 1"
+How many profiles were recorded in March 2018?,filter,"SELECT count(*) FROM profiles WHERE obs_time >= '2018-03-01' AND obs_time < '2018-04-01'"
+What is the average surface temperature in the Arabian Sea?,join,"SELECT avg(m.temperature_c) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE p.region = 'Arabian Sea' AND m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL"
+How many floats reported in the Bay of Bengal?,join,"SELECT count(DISTINCT float_id) FROM profiles WHERE region = 'Bay of Bengal'"
+Which float recorded the most profiles?,join,"SELECT float_id FROM profiles GROUP BY float_id ORDER BY count(*) DESC LIMIT 1"
+List the five floats with the most profiles,join,"SELECT float_id, count(*) AS profiles FROM profiles GROUP BY float_id ORDER BY count(*) DESC, float_id LIMIT 5"
+What is the average surface temperature for float 2900007?,join,"SELECT avg(m.temperature_c) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE p.float_id = 2900007 AND m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL"
+How many measurements belong to floats in the Southern Indian Ocean?,join,"SELECT count(*) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE p.region = 'Southern Indian Ocean'"
+What is the average surface salinity per region?,join,"SELECT p.region, avg(m.salinity_psu) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.salinity_psu IS NOT NULL GROUP BY p.region ORDER BY p.region"
+Which region has the most floats?,join,"SELECT region FROM profiles GROUP BY region ORDER BY count(DISTINCT float_id) DESC LIMIT 1"
+Average surface temperature per year,groupby,"SELECT date_trunc('year', p.obs_time) AS yr, avg(m.temperature_c) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY yr ORDER BY yr"
+Average surface temperature per year per region,groupby,"SELECT date_trunc('year', p.obs_time) AS yr, p.region, avg(m.temperature_c) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY yr, p.region ORDER BY yr, p.region"
+Number of profiles per region,groupby,"SELECT region, count(*) FROM profiles GROUP BY region ORDER BY region"
+What is the average temperature at each pressure level?,groupby,"SELECT pressure_dbar, avg(temperature_c) FROM measurements WHERE qc_flag = 1 AND temperature_c IS NOT NULL GROUP BY pressure_dbar ORDER BY pressure_dbar"
+Number of profiles per year,groupby,"SELECT date_trunc('year', obs_time) AS yr, count(*) FROM profiles GROUP BY yr ORDER BY yr"
+Average surface temperature for each calendar month,groupby,"SELECT EXTRACT(MONTH FROM p.obs_time) AS mth, avg(m.temperature_c) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY mth ORDER BY mth"
+Year over year change in mean surface temperature,window,"WITH yearly AS (SELECT date_trunc('year', p.obs_time) AS yr, avg(m.temperature_c) AS t FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY yr) SELECT yr, t - lag(t) OVER (ORDER BY yr) AS change FROM yearly ORDER BY yr"
+Which region warmed the most from its first to its last year?,window,"WITH yearly AS (SELECT p.region, date_trunc('year', p.obs_time) AS yr, avg(m.temperature_c) AS t FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY p.region, yr), ends AS (SELECT region, first_value(t) OVER (PARTITION BY region ORDER BY yr) AS first_t, last_value(t) OVER (PARTITION BY region ORDER BY yr ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_t FROM yearly) SELECT region FROM ends GROUP BY region ORDER BY max(last_t - first_t) DESC LIMIT 1"
+Median salinity per region,window,"SELECT p.region, percentile_cont(0.5) WITHIN GROUP (ORDER BY m.salinity_psu) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.qc_flag = 1 AND m.salinity_psu IS NOT NULL GROUP BY p.region ORDER BY p.region"
+Profiles per year with a running cumulative total,window,"SELECT date_trunc('year', obs_time) AS yr, count(*) AS n, sum(count(*)) OVER (ORDER BY date_trunc('year', obs_time)) AS cumulative FROM profiles GROUP BY yr ORDER BY yr"
+Rank the regions by mean surface temperature,window,"SELECT p.region, rank() OVER (ORDER BY avg(m.temperature_c) DESC) AS rnk FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY p.region ORDER BY rnk"
+What is the warmest calendar month in each region?,window,"WITH monthly AS (SELECT p.region, EXTRACT(MONTH FROM p.obs_time) AS mth, avg(m.temperature_c) AS t FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL GROUP BY p.region, mth), ranked AS (SELECT region, mth, row_number() OVER (PARTITION BY region ORDER BY t DESC) AS rn FROM monthly) SELECT region, mth FROM ranked WHERE rn = 1 ORDER BY region"
+How many measurements failed quality control?,qc,"SELECT count(*) FROM measurements WHERE qc_flag <> 1"
+What percentage of measurements passed quality control each year?,qc,"SELECT date_trunc('year', p.obs_time) AS yr, count(*) FILTER (WHERE m.qc_flag = 1) * 100.0 / count(*) AS pct FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id GROUP BY yr ORDER BY yr"
+How many profiles are in delayed mode?,qc,"SELECT count(*) FROM profiles WHERE data_mode = 'D'"
+What is the average temperature using only good temperature flags?,qc,"SELECT avg(temperature_c) FROM measurements WHERE temperature_qc = 1 AND temperature_c IS NOT NULL"
+How many measurements have a bad salinity flag?,qc,"SELECT count(*) FROM measurements WHERE salinity_qc = 4"
+What is the average rainfall in Chennai?,unanswerable,
+Which floats detected plastic pollution?,unanswerable,
+What is the wind speed over the Arabian Sea?,unanswerable,
+How many whales were observed by the floats?,unanswerable,
+What is the average pH of the water?,unanswerable,
+What is the dissolved oxygen concentration at 500 decibars?,unanswerable,
