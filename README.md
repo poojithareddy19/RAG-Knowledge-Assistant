@@ -262,7 +262,9 @@ Two harnesses, because the two paths fail differently.
 
 **Retrieval** ([`src/evaluation/evaluator.py`](src/evaluation/evaluator.py)). Recall@K, Precision@K, Hit@K, MRR, nDCG@K against `data/evaluation/questions.csv`. Relevance is anchored at **document and page** level rather than chunk ID, because chunk IDs renumber whenever chunk size changes, which would invalidate the entire gold set every time a chunking parameter is tuned.
 
-**Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). Validation pass rate, execution accuracy, non-empty rate, correct refusals on deliberately unanswerable questions, false refusals, and median/p95 latency, bucketed by question difficulty. Caching is bypassed so latency stays meaningful.
+**Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). The metric is **execution accuracy**: run the generated query and a hand-written reference query and compare their result sets. Whether a query parses says nothing about whether it answered the question.
+
+Comparing results rather than SQL text is deliberate, because there are many correct ways to write the same query. In one run the model answered "number of profiles per region" with a join the reference did not have, and was right.
 
 ```python
 from src.evaluation.sql_metrics import evaluate_file
@@ -270,7 +272,40 @@ from src.evaluation.sql_metrics import evaluate_file
 summary, by_bucket, detail = evaluate_file()
 ```
 
-> **Neither gold set is a benchmark yet.** `questions.csv` is a five-row schema template referencing documents not committed here. `ocean_questions.csv` is eight questions with `expected_value` unfilled, so the SQL harness currently measures whether a query runs, not whether its answer is right. Expanding these and publishing results is the top item on the roadmap, and the problem statement this project targets names ground-truth curation as its main limitation for exactly this reason.
+### Results
+
+47 questions, `llama3.1:8b` via Ollama, against 40 synthetic floats and 233,600 measurements. Single run.
+
+| Metric | Value |
+| ------------------------- | ----- |
+| **Execution accuracy**    | **0.707** |
+| Validation pass rate      | 1.000 |
+| Execution rate            | 0.976 |
+| Correct refusal rate      | 1.000 |
+| False refusal rate        | 0.000 |
+| Median latency            | 26.5 s |
+| p95 latency               | 44.7 s |
+
+| Bucket | Questions | Execution accuracy |
+| ------------ | --- | ----- |
+| easy         | 8   | 1.000 |
+| filter       | 8   | 1.000 |
+| qc           | 5   | 0.800 |
+| join         | 8   | 0.750 |
+| groupby      | 6   | 0.333 |
+| window       | 6   | 0.167 |
+| unanswerable | 6   | 6/6 refused |
+
+Accuracy falls as query complexity rises, and the fall is steep. Single-table aggregates and filters are perfect. **Window functions are 1 of 6 across two separate runs**, which is the most stable finding here: this model cannot reliably write `lag`, ranking or first/last-value SQL against this schema. That is a model-capability ceiling, not a prompt that needs another sentence.
+
+Validation pass rate is 1.000 while accuracy is 0.707. Every generated query was well formed, safe and ran, and 29% still answered the wrong question. That gap is the entire argument for measuring results instead of liveness.
+
+### What these numbers do not tell you
+
+- **Single run per configuration.** Temperature is 0, but any prompt change reshuffles outputs, so individual question flips are weak evidence. Treat differences under about five points as noise until someone runs it three times.
+- **Execution accuracy has false positives.** "Number of profiles per year" once scored correct with a query that joined `measurements` and filtered `pressure_dbar < 10`. Every profile happens to have exactly one measurement above 10 decibars in this dataset, so a wrong query collapsed to the right number. A coincidence in the data can mark a wrong query right.
+- **Synthetic data flatters some questions and breaks others.** Every float has exactly 730 profiles, so any "which float has the most" question is a 40-way tie with no single right answer. Two such questions had to be replaced. Real ARGO data would not have this shape.
+- **The document retrieval gold set is still a template.** `questions.csv` is five rows referencing documents not committed here. Only the SQL side has real numbers.
 
 ## Beyond retrieval
 
@@ -318,7 +353,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Charts.** Line and bar only, chosen from result shape. No trajectory map and no depth-profile plot, which are the two views this domain actually expects.
 
-**Evaluation.** No published numbers yet. See the note above.
+**Evaluation.** Text-to-SQL scores 0.707 execution accuracy, and complex queries are much worse than that average suggests: window functions are 1 of 6. Every number comes from a single run against synthetic data. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 
@@ -327,7 +362,10 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 - [ ] Real QC flags on the CSV loader too
 - [x] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
 - [ ] Answer a single question from documents and data together
-- [ ] Expand both gold sets, fill in expected values, publish the numbers
+- [x] Expand the SQL gold set to 47 questions with reference queries, publish the numbers
+- [ ] Repeat runs so a difference can be told from noise
+- [ ] Few-shot window-function examples, or a stronger model, for the bucket scoring 0.167
+- [ ] A document retrieval gold set that is not a five-row template
 - [ ] Trajectory map and depth-profile plots
 - [ ] Proper region assignment instead of lat/lon inequalities
 - [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)
