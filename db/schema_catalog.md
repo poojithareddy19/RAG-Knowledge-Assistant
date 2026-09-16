@@ -44,6 +44,23 @@ One row per depth level within a profile.
   that one parameter. Use these when a question is about a single parameter and
   you do not want a bad reading of another one to discard the row
 
+### Biogeochemical columns
+
+Only BGC-ARGO floats carry these sensors, so they are NULL on most rows. A
+question about one of them must exclude NULLs or it will average nothing.
+
+- `oxygen_umol_kg` (double) - dissolved oxygen, micromoles per kilogram
+- `chlorophyll_mg_m3` (double) - chlorophyll-a, milligrams per cubic metre
+- `nitrate_umol_kg` (double) - nitrate, micromoles per kilogram
+- `ph_total` (double) - pH on the total scale
+- `backscatter_700` (double) - particle backscattering at 700 nm, per metre
+- `oxygen_qc`, `chlorophyll_qc`, `nitrate_qc`, `ph_qc`, `backscatter_qc`
+  (smallint) - the ARGO flag for that parameter
+
+`qc_flag` summarises the CORE parameters only (pressure, temperature,
+salinity). It says nothing about a BGC value, so filter a BGC question on that
+parameter's own flag, for example `oxygen_qc = 1`.
+
 ARGO quality flags: 1 good, 2 probably good, 3 probably bad, 4 bad,
 5 changed, 8 interpolated, 9 missing.
 
@@ -56,6 +73,8 @@ ARGO quality flags: 1 good, 2 probably good, 3 probably bad, 4 bad,
 - For yearly aggregates use `date_trunc('year', obs_time)`
 - Prefer `qc_flag = 1`. Fall back to `temperature_qc = 1` only when the
   question is about temperature alone
+- For a biogeochemical question filter on that parameter's own flag and
+  exclude its NULLs, never on `qc_flag`
 
 ## Examples
 
@@ -74,6 +93,22 @@ WHERE p.region = 'Arabian Sea'
   AND m.temperature_c IS NOT NULL
 GROUP BY yr
 ORDER BY yr;
+```
+
+### Mean surface oxygen per region, from the floats that measure it
+
+```sql
+SELECT
+    p.region,
+    avg(m.oxygen_umol_kg) AS mean_oxygen
+FROM measurements m
+JOIN profiles p
+    ON p.profile_id = m.profile_id
+WHERE m.pressure_dbar < 10
+  AND m.oxygen_qc = 1
+  AND m.oxygen_umol_kg IS NOT NULL
+GROUP BY p.region
+ORDER BY p.region;
 ```
 
 ### Mean surface temperature per region, delayed-mode profiles only

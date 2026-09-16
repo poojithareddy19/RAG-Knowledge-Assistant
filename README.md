@@ -4,7 +4,7 @@ Natural-language questions answered from two kinds of source, with the evidence 
 
 Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard and a FastAPI service. Not yet built: BGC parameters and published evaluation numbers. See [Limitations](#limitations) and [Roadmap](#roadmap) for the honest list.
+> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and a 52-question text-to-SQL benchmark with [published results](#results). The largest remaining gaps are that a single question is answered from documents or data but never both, and that no BGC-ARGO float has been loaded yet, so those columns are all NULL. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -87,7 +87,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | --------------- | ----------------------------------------- | --------------------------------- |
 | Language        | Python 3.12+                              |                                   |
 | Ocean ingestion | `xarray` + `netCDF4`                      | ARGO profile files, ERDDAP CSV    |
-| Structured data | PostgreSQL 16                             | floats → profiles → measurements  |
+| Structured data | PostgreSQL 16                             | core CTD plus five BGC parameters |
 | Vector store    | pgvector, cosine                          | FAISS backend still selectable    |
 | Embeddings      | `sentence-transformers` (BAAI/bge-small)  | swappable via config              |
 | Reranking       | cross-encoder `ms-marco-MiniLM-L-6-v2`    | on by default                     |
@@ -125,6 +125,7 @@ RAG_Assistant/
 │   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
 ├── db/              001_schema.sql · 002_pgvector.sql · 003_roles.sql
 │                    004_argo_qc.sql · 005_semantic_layer.sql
+│                    006_bgc_parameters.sql
 │                    schema_catalog.md · queries/         # 12 reference queries
 ├── scripts/         load_argo_netcdf.py · load_argo.py
 │                    build_semantic_index.py
@@ -276,6 +277,8 @@ summary, by_bucket, detail = evaluate_file()
 
 47 questions, `llama3.1:8b` via Ollama, against 40 synthetic floats and 233,600 measurements. Single run.
 
+> These numbers predate the biogeochemical columns. The gold set is now 52 questions with a `bgc` bucket, so the table below describes the system as it was before BGC landed and needs a re-run to describe it now.
+
 | Metric | Value |
 | ------------------------- | ----- |
 | **Execution accuracy**    | **0.707** |
@@ -345,7 +348,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 ## Limitations
 
-**Data.** Only core parameters are stored (pressure, temperature, salinity); BGC parameters such as oxygen, chlorophyll and nitrate are not modelled. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
+**Data.** The schema carries core CTD and five biogeochemical parameters, but the synthetic dataset has no BGC readings, so every BGC column is currently NULL and the `bgc` eval questions pass by both sides correctly finding nothing. Loading a real BGC-ARGO float is what would exercise them. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
 
 **Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
@@ -358,7 +361,8 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 ## Roadmap
 
 - [x] NetCDF ingestion with `xarray`, carrying real QC flags through
-- [ ] BGC-ARGO parameters in the schema and catalog
+- [x] BGC-ARGO parameters in the schema, parser and catalog
+- [ ] Load a real BGC float so the bgc questions test more than a shared NULL
 - [ ] Real QC flags on the CSV loader too
 - [x] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
 - [ ] Answer a single question from documents and data together

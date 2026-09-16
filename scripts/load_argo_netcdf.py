@@ -12,7 +12,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from src.ingestion.argo_netcdf import read_paths
+from src.ingestion.argo_netcdf import PARAMETERS, read_paths
 from src.utils.db import cursor
 
 load_dotenv()
@@ -49,19 +49,27 @@ ON CONFLICT (float_id, cycle_number) DO NOTHING
 RETURNING profile_id
 """
 
-INSERT_MEASUREMENTS = """
-INSERT INTO measurements (
-    profile_id,
-    pressure_dbar,
-    temperature_c,
-    salinity_psu,
-    qc_flag,
-    pressure_qc,
-    temperature_qc,
-    salinity_qc
+# Derived from the parameter list so adding a sensor never means editing an
+# INSERT and a value tuple in step.
+MEASUREMENT_COLUMNS = (
+    ["profile_id", "qc_flag"]
+    + [parameter.column for parameter in PARAMETERS]
+    + [parameter.qc_column for parameter in PARAMETERS]
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+
+INSERT_MEASUREMENTS = f"""
+INSERT INTO measurements ({", ".join(MEASUREMENT_COLUMNS)})
+VALUES ({", ".join(["%s"] * len(MEASUREMENT_COLUMNS))})
 """
+
+
+def measurement_row(profile_id, level):
+    """One level as a tuple matching ``MEASUREMENT_COLUMNS``."""
+    return tuple(
+        [profile_id, level.qc_flag]
+        + [level.values[parameter.column] for parameter in PARAMETERS]
+        + [level.flags[parameter.qc_column] for parameter in PARAMETERS]
+    )
 
 
 def load(targets):
@@ -117,16 +125,7 @@ def load(targets):
             cur.executemany(
                 INSERT_MEASUREMENTS,
                 [
-                    (
-                        profile_id,
-                        level.pressure_dbar,
-                        level.temperature_c,
-                        level.salinity_psu,
-                        level.qc_flag,
-                        level.pressure_qc,
-                        level.temperature_qc,
-                        level.salinity_qc,
-                    )
+                    measurement_row(profile_id, level)
                     for level in profile.levels
                 ],
             )

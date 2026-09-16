@@ -44,5 +44,10 @@ What is the average rainfall in Chennai?,unanswerable,
 Which floats detected plastic pollution?,unanswerable,
 What is the wind speed over the Arabian Sea?,unanswerable,
 How many whales were observed by the floats?,unanswerable,
-What is the average pH of the water?,unanswerable,
-What is the dissolved oxygen concentration at 500 decibars?,unanswerable,
+What is the average pH of the water?,bgc,"SELECT avg(ph_total) FROM measurements WHERE ph_qc = 1 AND ph_total IS NOT NULL"
+What is the average dissolved oxygen at 500 decibars?,bgc,"SELECT avg(oxygen_umol_kg) FROM measurements WHERE pressure_dbar = 500 AND oxygen_qc = 1 AND oxygen_umol_kg IS NOT NULL"
+What is the average surface chlorophyll in each region?,bgc,"SELECT p.region, avg(m.chlorophyll_mg_m3) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.pressure_dbar < 10 AND m.chlorophyll_qc = 1 AND m.chlorophyll_mg_m3 IS NOT NULL GROUP BY p.region ORDER BY p.region"
+How many measurements have a nitrate reading?,bgc,"SELECT count(*) FROM measurements WHERE nitrate_umol_kg IS NOT NULL"
+How many floats measure dissolved oxygen?,bgc,"SELECT count(DISTINCT p.float_id) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.oxygen_umol_kg IS NOT NULL"
+What is the seafloor depth beneath each float?,unanswerable,
+What is the current speed at 1000 decibars?,unanswerable,

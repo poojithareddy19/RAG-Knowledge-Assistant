@@ -46,20 +46,56 @@ _QC_BADNESS = {1: 0, 2: 1, 5: 2, 8: 3, 3: 4, 4: 5, 9: 6}
 # is derived from its position, so a bad fix poisons more than one column.
 _REJECTED = 4
 
-PARAMETERS = ("PRES", "TEMP", "PSAL")
+
+@dataclass(frozen=True)
+class Parameter:
+    """One measured quantity: its ARGO variable and the columns it lands in."""
+
+    argo: str
+    column: str
+    qc_column: str
+
+
+# The CTD payload every float carries.
+CORE = (
+    Parameter("PRES", "pressure_dbar", "pressure_qc"),
+    Parameter("TEMP", "temperature_c", "temperature_qc"),
+    Parameter("PSAL", "salinity_psu", "salinity_qc"),
+)
+
+# Biogeochemical sensors, carried by a minority of the fleet. Absent variables
+# read as missing, so a core-only file simply produces nulls for these.
+BGC = (
+    Parameter("DOXY", "oxygen_umol_kg", "oxygen_qc"),
+    Parameter("CHLA", "chlorophyll_mg_m3", "chlorophyll_qc"),
+    Parameter("NITRATE", "nitrate_umol_kg", "nitrate_qc"),
+    Parameter("PH_IN_SITU_TOTAL", "ph_total", "ph_qc"),
+    Parameter("BBP700", "backscatter_700", "backscatter_qc"),
+)
+
+PARAMETERS = CORE + BGC
+
+PRESSURE = CORE[0]
 
 
 @dataclass
 class ArgoLevel:
-    """One depth level within a profile."""
+    """One depth level within a profile.
 
-    pressure_dbar: float
-    temperature_c: float | None
-    salinity_psu: float | None
-    pressure_qc: int | None
-    temperature_qc: int | None
-    salinity_qc: int | None
+    Values and flags are keyed by database column rather than held as named
+    fields, because the parameter list is data: adding a sensor should be one
+    line in ``BGC`` and a migration, not a new attribute threaded through the
+    parser, the loader and every caller.
+    """
+
+    values: dict[str, float | None]
+    flags: dict[str, int | None]
     qc_flag: int | None
+
+    @property
+    def pressure_dbar(self) -> float:
+        """Always present: a level without a depth is dropped when parsed."""
+        return self.values[PRESSURE.column]
 
 
 @dataclass
@@ -186,46 +222,50 @@ def _profiles(dataset) -> list[ArgoProfile]:
 
 def _levels(dataset, index, mode) -> list[ArgoLevel]:
     """Every level of one profile that measured something at a known depth."""
-    values = {}
-    flags = {}
+    columns = {}
+    flag_columns = {}
 
     for parameter in PARAMETERS:
-        name, qc_name = _variant(dataset, parameter, mode)
-        values[parameter] = _column(dataset, name, index)
-        flags[parameter] = _qc_column(dataset, qc_name, index)
+        name, qc_name = _variant(dataset, parameter.argo, mode)
+        columns[parameter.column] = _column(dataset, name, index)
+        flag_columns[parameter.qc_column] = _qc_column(dataset, qc_name, index)
 
     out = []
 
-    for level in range(len(values["PRES"])):
-        pressure = values["PRES"][level]
-
+    for level in range(len(columns[PRESSURE.column])):
         # A measurement with no depth cannot be placed in the water column.
-        if _missing(pressure):
+        if _missing(columns[PRESSURE.column][level]):
             continue
 
-        temperature = values["TEMP"][level]
-        salinity = values["PSAL"][level]
+        values = {
+            parameter.column: _clean(columns[parameter.column][level])
+            for parameter in PARAMETERS
+        }
 
-        if _missing(temperature) and _missing(salinity):
+        flags = {
+            parameter.qc_column: flag_columns[parameter.qc_column][level]
+            for parameter in PARAMETERS
+        }
+
+        measured = any(
+            values[parameter.column] is not None
+            for parameter in PARAMETERS
+            if parameter is not PRESSURE
+        )
+
+        if not measured:
             continue
-
-        pressure_qc = flags["PRES"][level]
-        temperature_qc = flags["TEMP"][level]
-        salinity_qc = flags["PSAL"][level]
 
         out.append(
             ArgoLevel(
-                pressure_dbar=float(pressure),
-                temperature_c=_clean(temperature),
-                salinity_psu=_clean(salinity),
-                pressure_qc=pressure_qc,
-                temperature_qc=temperature_qc,
-                salinity_qc=salinity_qc,
+                values=values,
+                flags=flags,
+                # Core parameters only. A bad nitrate must not discard a good
+                # temperature; BGC is filtered by its own flag instead.
                 qc_flag=_overall_qc(
                     [
-                        (pressure, pressure_qc),
-                        (temperature, temperature_qc),
-                        (salinity, salinity_qc),
+                        (values[parameter.column], flags[parameter.qc_column])
+                        for parameter in CORE
                     ]
                 ),
             )

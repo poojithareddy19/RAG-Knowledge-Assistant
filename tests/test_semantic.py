@@ -75,6 +75,21 @@ def test_unknown_metadata_is_left_out():
     assert "unknown" not in summarise_float(row).lower()
 
 
+def test_a_core_only_float_is_not_described_as_bgc():
+    assert "BGC" not in summarise_float(FLOAT_ROW)
+    assert "oxygen" not in summarise_float(FLOAT_ROW)
+
+
+def test_bgc_sensors_are_named_when_the_float_carries_them():
+    bgc = dict(FLOAT_ROW, oxygen_n=5000, chlorophyll_n=4800, ph_n=0)
+
+    text = summarise_float(bgc)
+
+    assert "BGC float" in text
+    assert "dissolved oxygen and chlorophyll" in text
+    assert "pH" not in text
+
+
 def test_counts_are_pluralised_and_grouped():
     assert "3,204 profiles" in summarise_region(REGION_ROW)
     assert "58 floats" in summarise_region(REGION_ROW)

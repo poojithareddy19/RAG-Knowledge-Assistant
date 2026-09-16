@@ -32,7 +32,12 @@ SELECT
     ) AS mean_surface_temp,
     round(
         avg(m.salinity_psu) FILTER (WHERE m.pressure_dbar < 10)::numeric, 2
-    ) AS mean_surface_salinity
+    ) AS mean_surface_salinity,
+    count(m.oxygen_umol_kg) AS oxygen_n,
+    count(m.chlorophyll_mg_m3) AS chlorophyll_n,
+    count(m.nitrate_umol_kg) AS nitrate_n,
+    count(m.ph_total) AS ph_n,
+    count(m.backscatter_700) AS backscatter_n
 FROM floats f
 JOIN profiles p
     ON p.float_id = f.float_id
@@ -54,7 +59,12 @@ SELECT
     ) AS mean_surface_temp,
     round(
         avg(m.salinity_psu) FILTER (WHERE m.pressure_dbar < 10)::numeric, 2
-    ) AS mean_surface_salinity
+    ) AS mean_surface_salinity,
+    count(m.oxygen_umol_kg) AS oxygen_n,
+    count(m.chlorophyll_mg_m3) AS chlorophyll_n,
+    count(m.nitrate_umol_kg) AS nitrate_n,
+    count(m.ph_total) AS ph_n,
+    count(m.backscatter_700) AS backscatter_n
 FROM profiles p
 LEFT JOIN measurements m
     ON m.profile_id = p.profile_id
@@ -102,6 +112,13 @@ def summarise_float(row: dict) -> str:
     if surface:
         sentences.append(surface)
 
+    sensors = _sensors(row)
+
+    if sensors:
+        sentences.append(
+            f"It is a BGC float and also measures {sensors}."
+        )
+
     return " ".join(sentences)
 
 
@@ -122,6 +139,11 @@ def summarise_region(row: dict) -> str:
 
     if surface:
         sentences.append(surface)
+
+    sensors = _sensors(row)
+
+    if sensors:
+        sentences.append(f"Some of its floats also measure {sensors}.")
 
     return " ".join(sentences)
 
@@ -192,6 +214,35 @@ def _surface(row: dict) -> str:
         return ""
 
     return f"Good-quality readings give a {' and a '.join(stated)}."
+
+
+# The biogeochemical sensors, named the way somebody would ask for them.
+_SENSORS = (
+    ("oxygen_n", "dissolved oxygen"),
+    ("chlorophyll_n", "chlorophyll"),
+    ("nitrate_n", "nitrate"),
+    ("ph_n", "pH"),
+    ("backscatter_n", "particle backscatter"),
+)
+
+
+def _sensors(row: dict) -> str:
+    """The BGC parameters this subject actually carries readings for.
+
+    Most of the fleet is core-only, so saying which floats have a sensor is
+    the difference between a BGC question finding data and averaging nothing.
+    """
+    carried = [
+        label for key, label in _SENSORS if int(row.get(key) or 0) > 0
+    ]
+
+    if not carried:
+        return ""
+
+    if len(carried) == 1:
+        return carried[0]
+
+    return f"{', '.join(carried[:-1])} and {carried[-1]}"
 
 
 def _article(word: str) -> str:
