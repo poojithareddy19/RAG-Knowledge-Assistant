@@ -118,7 +118,7 @@ def ask(req: AskRequest) -> AskResponse:
     result.pop("chart_png", None)
 
     # The API calls these fields "citations".
-    result["citations"] = result.pop("retrieved", [])
+    result["citations"] = result.pop("sources", [])
 
     return AskResponse(
         **{
