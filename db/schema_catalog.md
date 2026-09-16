@@ -25,6 +25,8 @@ One row per surfacing event. A float has many profiles.
   - `Arabian Sea`
   - `Bay of Bengal`
   - `Southern Indian Ocean`
+- `data_mode` (char) - `R` real-time, `D` delayed, `A` adjusted. `D` is the
+  quality-controlled science record. NULL for rows loaded from CSV.
 
 ## measurements
 
@@ -35,7 +37,15 @@ One row per depth level within a profile.
 - `pressure_dbar` (double) - approximately depth in metres
 - `temperature_c` (double) - degrees Celsius
 - `salinity_psu` (double) - practical salinity units
-- `qc_flag` (smallint) - 1 means good; ignore rows where `qc_flag <> 1`
+- `qc_flag` (smallint) - overall quality of the row: the worst flag among the
+  parameters that reported a value. 1 means good; ignore rows where
+  `qc_flag <> 1`
+- `pressure_qc`, `temperature_qc`, `salinity_qc` (smallint) - the ARGO flag for
+  that one parameter. Use these when a question is about a single parameter and
+  you do not want a bad reading of another one to discard the row
+
+ARGO quality flags: 1 good, 2 probably good, 3 probably bad, 4 bad,
+5 changed, 8 interpolated, 9 missing.
 
 ## Conventions
 
@@ -44,6 +54,8 @@ One row per depth level within a profile.
 - Always exclude rows with `temperature_c IS NULL` from averages
 - Join path: `measurements -> profiles -> floats`
 - For yearly aggregates use `date_trunc('year', obs_time)`
+- Prefer `qc_flag = 1`. Fall back to `temperature_qc = 1` only when the
+  question is about temperature alone
 
 ## Examples
 
@@ -62,3 +74,21 @@ WHERE p.region = 'Arabian Sea'
   AND m.temperature_c IS NOT NULL
 GROUP BY yr
 ORDER BY yr;
+```
+
+### Mean surface temperature per region, delayed-mode profiles only
+
+```sql
+SELECT
+    p.region,
+    avg(m.temperature_c) AS mean_temp
+FROM measurements m
+JOIN profiles p
+    ON p.profile_id = m.profile_id
+WHERE p.data_mode = 'D'
+  AND m.pressure_dbar < 10
+  AND m.temperature_qc = 1
+  AND m.temperature_c IS NOT NULL
+GROUP BY p.region
+ORDER BY p.region;
+```

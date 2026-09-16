@@ -6,6 +6,7 @@ import sys
 import pandas as pd
 from dotenv import load_dotenv
 
+from src.ingestion.regions import region_for
 from src.utils.db import cursor
 
 load_dotenv()
@@ -21,16 +22,6 @@ COLUMN_MAP = {
     "temp": "temperature_c",
     "psal": "salinity_psu",
 }
-
-
-def region_for(lat, lon):
-    if lat > 5 and lon < 78:
-        return "Arabian Sea"
-
-    if lat > 5:
-        return "Bay of Bengal"
-
-    return "Southern Indian Ocean"
 
 
 def load(path_or_url):

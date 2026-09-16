@@ -1,0 +1,146 @@
+"""Load ARGO profile NetCDF files into the database.
+
+    python scripts/load_argo_netcdf.py path/to/file.nc
+    python scripts/load_argo_netcdf.py path/to/dap/dac/incois/
+
+Accepts files or directories; directories are searched recursively for *.nc.
+Re-running is safe: a profile already present is left alone rather than
+duplicated, so a partial load can simply be repeated.
+"""
+
+import sys
+
+from dotenv import load_dotenv
+
+from src.ingestion.argo_netcdf import read_paths
+from src.utils.db import cursor
+
+load_dotenv()
+
+
+UPSERT_FLOAT = """
+INSERT INTO floats (float_id, platform, project, first_seen, last_seen)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (float_id) DO UPDATE
+SET platform   = COALESCE(
+                     NULLIF(EXCLUDED.platform, ''),
+                     floats.platform
+                 ),
+    project    = COALESCE(
+                     NULLIF(EXCLUDED.project, ''),
+                     floats.project
+                 ),
+    first_seen = LEAST(floats.first_seen, EXCLUDED.first_seen),
+    last_seen  = GREATEST(floats.last_seen, EXCLUDED.last_seen)
+"""
+
+INSERT_PROFILE = """
+INSERT INTO profiles (
+    float_id,
+    cycle_number,
+    obs_time,
+    latitude,
+    longitude,
+    region,
+    data_mode
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (float_id, cycle_number) DO NOTHING
+RETURNING profile_id
+"""
+
+INSERT_MEASUREMENTS = """
+INSERT INTO measurements (
+    profile_id,
+    pressure_dbar,
+    temperature_c,
+    salinity_psu,
+    qc_flag,
+    pressure_qc,
+    temperature_qc,
+    salinity_qc
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+def load(targets):
+    """Read every profile under ``targets`` and insert what is not there yet."""
+    profiles = read_paths(targets)
+
+    print(f"read {len(profiles)} profiles")
+
+    floats = set()
+    inserted = 0
+    skipped = 0
+    measurements = 0
+
+    with cursor() as cur:
+        for profile in profiles:
+            observed = profile.obs_time.date()
+
+            cur.execute(
+                UPSERT_FLOAT,
+                (
+                    profile.float_id,
+                    profile.platform,
+                    profile.project,
+                    observed,
+                    observed,
+                ),
+            )
+
+            floats.add(profile.float_id)
+
+            cur.execute(
+                INSERT_PROFILE,
+                (
+                    profile.float_id,
+                    profile.cycle_number,
+                    profile.obs_time,
+                    profile.latitude,
+                    profile.longitude,
+                    profile.region,
+                    profile.data_mode,
+                ),
+            )
+
+            row = cur.fetchone()
+
+            if row is None:
+                skipped += 1
+                continue
+
+            profile_id = row[0]
+            inserted += 1
+
+            cur.executemany(
+                INSERT_MEASUREMENTS,
+                [
+                    (
+                        profile_id,
+                        level.pressure_dbar,
+                        level.temperature_c,
+                        level.salinity_psu,
+                        level.qc_flag,
+                        level.pressure_qc,
+                        level.temperature_qc,
+                        level.salinity_qc,
+                    )
+                    for level in profile.levels
+                ],
+            )
+
+            measurements += len(profile.levels)
+
+    print(
+        f"{len(floats)} floats, {inserted} profiles inserted "
+        f"({skipped} already present), {measurements} measurements"
+    )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit("pass one or more .nc files or directories")
+
+    load(sys.argv[1:])

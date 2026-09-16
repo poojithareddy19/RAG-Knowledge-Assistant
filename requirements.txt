@@ -9,6 +9,10 @@ python-dotenv>=1.0
 pypdf>=4.0,<6.0
 python-docx>=1.1
 
+# ARGO NetCDF ingestion
+xarray>=2024.3
+netCDF4>=1.6
+
 # Chunking (only framework dependency; isolated to src/ingestion/chunker.py)
 langchain-text-splitters>=0.2,<0.4
 

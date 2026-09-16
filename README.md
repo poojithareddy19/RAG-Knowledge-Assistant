@@ -4,7 +4,7 @@ Natural-language questions answered from two kinds of source, with the evidence 
 
 Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: document RAG with citations and refusal, text-to-SQL over a PostgreSQL ARGO schema with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard and a FastAPI service. Not yet built: NetCDF ingestion (data arrives as ERDDAP CSV today), BGC parameters, a semantic layer over float metadata, and published evaluation numbers. See [Limitations](#limitations) and [Roadmap](#roadmap) for the honest list.
+> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with per-parameter QC, document RAG with citations and refusal, text-to-SQL over a PostgreSQL ARGO schema with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard and a FastAPI service. Not yet built: BGC parameters, a semantic layer over float metadata, and published evaluation numbers. See [Limitations](#limitations) and [Roadmap](#roadmap) for the honest list.
 
 ---
 
@@ -73,6 +73,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Concern         | Choice                                    | Notes                             |
 | --------------- | ----------------------------------------- | --------------------------------- |
 | Language        | Python 3.12+                              |                                   |
+| Ocean ingestion | `xarray` + `netCDF4`                      | ARGO profile files, ERDDAP CSV    |
 | Structured data | PostgreSQL 16                             | floats → profiles → measurements  |
 | Vector store    | pgvector, cosine                          | FAISS backend still selectable    |
 | Embeddings      | `sentence-transformers` (BAAI/bge-small)  | swappable via config              |
@@ -95,7 +96,7 @@ RAG_Assistant/
 ├── config.yaml                # all tunable behaviour
 ├── docker-compose.yml         # pgvector Postgres + the API
 ├── src/
-│   ├── ingestion/   loader.py · chunker.py
+│   ├── ingestion/   loader.py · chunker.py · argo_netcdf.py · regions.py
 │   ├── embeddings/  embedding_model.py
 │   ├── vectorstore/ pgvector_store.py · vectordb.py      # pgvector or FAISS
 │   ├── retrieval/   retriever.py · reranker.py · confidence.py
@@ -109,8 +110,10 @@ RAG_Assistant/
 │   ├── api/         main.py · schemas.py                 # FastAPI
 │   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
 ├── db/              001_schema.sql · 002_pgvector.sql · 003_roles.sql
+│                    004_argo_qc.sql
 │                    schema_catalog.md · queries/         # 12 reference queries
-├── scripts/         load_argo.py · make_sample_data.py · run_ab_test.py
+├── scripts/         load_argo_netcdf.py · load_argo.py
+│                    make_sample_data.py · run_ab_test.py
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
 ```
@@ -135,6 +138,12 @@ Start PostgreSQL with pgvector. The schema, extension and read-only role in `db/
 docker compose up -d db
 ```
 
+Those files run only when the volume is empty. On a database created before the QC columns existed, apply the migration by hand:
+
+```bash
+docker compose exec -T db psql -U gda -d gda < db/004_argo_qc.sql
+```
+
 The default provider is Ollama, which needs no API key:
 
 ```bash
@@ -143,7 +152,17 @@ ollama pull llama3.1
 
 ### Load ocean data
 
-Either load a real ARGO export from ERDDAP tabledap:
+ARGO is distributed as NetCDF, which is the loader to prefer. It takes files or directories and searches directories recursively:
+
+```bash
+python scripts/load_argo_netcdf.py path/to/dac/incois/
+```
+
+Re-running is safe: profiles already present are left alone rather than duplicated, so an interrupted load can simply be repeated.
+
+Two ARGO conventions are handled in [`src/ingestion/argo_netcdf.py`](src/ingestion/argo_netcdf.py) rather than left to the caller. Profiles in delayed or adjusted mode are read from their `*_ADJUSTED` variables, because in those modes the raw variables are kept only for provenance and reading them anyway is the most common way to get ARGO wrong. And each parameter's QC flag is stored separately, because a level can have good temperature and bad salinity.
+
+There is also an ERDDAP tabledap CSV loader, kept because a CSV export is often the quickest way to get a region loaded:
 
 ```bash
 python scripts/load_argo.py path/to/argo_export.csv
@@ -258,7 +277,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 ## Limitations
 
-**Data.** Ingestion reads ERDDAP CSV exports, not NetCDF, which is the native ARGO distribution format. Only core parameters are stored (pressure, temperature, salinity); BGC parameters such as oxygen, chlorophyll and nitrate are not modelled. `qc_flag` is written as `1` for every row by the loader, so the QC conventions in the prompt and schema catalog are structural, not yet enforced against real flags. Region is assigned by three latitude/longitude inequalities in `scripts/load_argo.py`, which is coarse for a field that nearly every query groups by.
+**Data.** Only core parameters are stored (pressure, temperature, salinity); BGC parameters such as oxygen, chlorophyll and nitrate are not modelled. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
 
 **Architecture.** The document and data paths are routed between, not combined. The vector store holds uploaded documents only; float and profile metadata are not summarised and embedded, so there is no semantic layer feeding SQL generation. A question needing both sources gets one.
 
@@ -270,8 +289,9 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 ## Roadmap
 
-- [ ] NetCDF ingestion with `xarray`, carrying real QC flags through
+- [x] NetCDF ingestion with `xarray`, carrying real QC flags through
 - [ ] BGC-ARGO parameters in the schema and catalog
+- [ ] Real QC flags on the CSV loader too
 - [ ] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
 - [ ] Expand both gold sets, fill in expected values, publish the numbers
 - [ ] Trajectory map and depth-profile plots
