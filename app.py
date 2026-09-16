@@ -456,6 +456,19 @@ def _page_ocean_data(cfg):
             use_container_width=True,
         )
 
+    if result.get("context_used"):
+        with st.expander(
+            "What the model was told the database contains"
+        ):
+            for note in result["context_used"]:
+                st.markdown(f"- {note}")
+
+            st.caption(
+                "Retrieved before the SQL was written. These are summaries "
+                "used to resolve names and ranges; every number in the answer "
+                "is computed by the query, not read from here."
+            )
+
     with st.expander("Generated SQL and timing"):
         st.code(
             result["generated_sql"],
@@ -464,9 +477,14 @@ def _page_ocean_data(cfg):
 
         st.write(
             f"{result['row_count']} rows in "
-            f"{result['elapsed_ms']} ms"
+            f"{result['elapsed_ms']} ms end to end"
             + (
-                " · served from cache"
+                f" · {result['db_elapsed_ms']} ms in the database"
+                if result.get("db_elapsed_ms") is not None
+                else ""
+            )
+            + (
+                " · SQL served from cache"
                 if result.get("sql_cached")
                 else ""
             )

@@ -26,19 +26,28 @@ import shutil
 import time
 from pathlib import Path
 
+import httpx
+
 from src.charts.builder import render
 from src.embeddings.embedding_model import get_embedding_model
 from src.generation.answer_generator import AnswerGenerator
 from src.ingestion.chunker import chunk_segments
 from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
-from src.monitoring.logger import log_interaction
+from src.monitoring.logger import log_interaction, log_result
 from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
+from src.semantic.index import SemanticIndex, Summary, as_context
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql
+from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.validator import SQLRejected, validate
 from src.utils.config import get_config
 from src.utils.schemas import Answer, Chunk
+
+
+def _first_line(exc: Exception) -> str:
+    """The readable part of an exception, without trailing detail blocks."""
+    return str(exc).strip().splitlines()[0].strip()
 
 
 class RAGService:
@@ -53,6 +62,7 @@ class RAGService:
         # so the store must be created before them.
         self.retriever = Retriever(self.store)
         self.generator = AnswerGenerator(self.retriever)
+        self.semantic = SemanticIndex()
 
     def _build_store(self):
         """Build the configured vector-store backend."""
@@ -192,22 +202,21 @@ class RAGService:
         result["route"] = chosen
         result["route_decided_by"] = how
 
-        result.setdefault(
-            "elapsed_ms",
-            round(
-                (
-                    time.perf_counter()
-                    - started
-                )
-                * 1000,
-                1,
-            ),
+        # Always the end-to-end wall clock. The database time, when there
+        # is one, is reported separately as db_elapsed_ms.
+        result["elapsed_ms"] = round(
+            (
+                time.perf_counter()
+                - started
+            )
+            * 1000,
+            1,
         )
 
         try:
-            log_interaction(
+            log_result(
+                question,
                 result,
-                question=question,
             )
         except Exception:
             # Logging must never break the user path.
@@ -245,16 +254,58 @@ class RAGService:
         question: str,
         want_chart: bool = False,
     ) -> dict:
-        """Generate, validate and execute a SQL query."""
-        raw_sql, cached = generate_sql(
+        """Retrieve context, then generate, validate and execute a SQL query.
+
+        The summaries that shaped the query come back with it, so a reader can
+        see what the model was told before it wrote any SQL.
+        """
+        summaries = self._summaries(question)
+
+        result = self._query_data(
             question,
-            model=self.cfg.sql.get("model"),
-            use_cache=self.cfg.cache.get(
-                "enabled",
-                True,
-            ),
-            return_cache_flag=True,
+            want_chart,
+            as_context(summaries),
         )
+
+        result["context_used"] = [
+            summary.text for summary in summaries
+        ]
+
+        return result
+
+    def _query_data(
+        self,
+        question: str,
+        want_chart: bool,
+        context: str,
+    ) -> dict:
+        try:
+            raw_sql, cached = generate_sql(
+                question,
+                model=self.cfg.sql.get("model"),
+                timeout=self.cfg.sql.get(
+                    "gen_timeout_seconds",
+                    90,
+                ),
+                use_cache=self.cfg.cache.get(
+                    "enabled",
+                    True,
+                ),
+                return_cache_flag=True,
+                context=context,
+            )
+        except httpx.TimeoutException:
+            return self._sql_failure(
+                "The language model did not answer in time, so no SQL was "
+                "produced. It may still be loading into memory; try again.",
+                reason="sql generation timed out",
+            )
+        except Exception as exc:
+            return self._sql_failure(
+                "The language model could not be reached, so no SQL was "
+                f"produced. Reason: {_first_line(exc)}",
+                reason=f"sql generation failed: {_first_line(exc)}",
+            )
 
         try:
             safe_sql = validate(
@@ -262,6 +313,7 @@ class RAGService:
                 allowed_tables=self.cfg.sql.allowed_tables,
                 max_limit=self.cfg.sql.max_rows,
                 default_limit=self.cfg.sql.default_limit,
+                column_catalog=self._column_catalog(),
             )
         except SQLRejected as exc:
             return {
@@ -284,17 +336,22 @@ class RAGService:
                 timeout_ms=self.cfg.sql.timeout_ms,
             )
         except Exception as exc:
+            # Postgres errors carry a multi-line caret diagram that means
+            # nothing to a reader of the web page. Keep the first line.
+            detail = _first_line(exc)
+
             return {
                 "answer": (
-                    "The query was valid but failed to run: "
-                    f"{exc}"
+                    "The query was accepted but the database rejected it: "
+                    f"{detail}"
                 ),
                 "answered": False,
                 "refused": True,
                 "generated_sql": safe_sql,
                 "sql_cached": cached,
                 "confidence": 0.0,
-                "error": str(exc),
+                "reason": detail,
+                "error": detail,
             }
 
         png = None
@@ -315,7 +372,7 @@ class RAGService:
             "columns": result["columns"],
             "rows": result["rows"][:100],
             "row_count": result["row_count"],
-            "elapsed_ms": result["elapsed_ms"],
+            "db_elapsed_ms": result["elapsed_ms"],
             "chart_png": png,
             "chart_kind": kind,
             # For documents, confidence measures retrieval quality.
@@ -325,6 +382,50 @@ class RAGService:
                 if result["row_count"]
                 else 0.0
             ),
+        }
+
+    def _summaries(self, question: str) -> list[Summary]:
+        """What the semantic layer knows about this question, or nothing.
+
+        A database without the summaries table, or one nobody has indexed yet,
+        should still answer questions from the schema alone, so a failure here
+        degrades to the previous behaviour rather than an error.
+        """
+        if not self.cfg.get("semantic", {}).get("enabled", True):
+            return []
+
+        try:
+            return self.semantic.search(question)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _column_catalog() -> dict | None:
+        """Live table/column map for the validator, or None if unavailable.
+
+        A database that cannot be introspected should not stop a query from
+        being attempted; the validator simply skips the column check.
+        """
+        try:
+            return load_column_catalog()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _sql_failure(
+        message: str,
+        reason: str,
+    ) -> dict:
+        """Uniform refusal for a query that never reached the database."""
+        return {
+            "answer": message,
+            "answered": False,
+            "refused": True,
+            "generated_sql": None,
+            "sql_cached": False,
+            "confidence": 0.0,
+            "reason": reason,
+            "error": reason,
         }
 
     @staticmethod
@@ -363,10 +464,7 @@ class RAGService:
         answer = self.generator.answer(question)
 
         try:
-            log_interaction(
-                answer,
-                question=question,
-            )
+            log_interaction(answer)
         except Exception:
             # Logging must never break the user path.
             pass

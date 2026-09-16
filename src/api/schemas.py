@@ -33,12 +33,14 @@ class AskResponse(BaseModel):
     refused: bool = False
     reason: str = ""
     citations: list[dict[str, Any]] = []
+    context_used: list[str] = []
     generated_sql: str | None = None
     sql_cached: bool | None = None
     columns: list[str] | None = None
     rows: list[list[Any]] | None = None
     row_count: int | None = None
     elapsed_ms: float | None = None
+    db_elapsed_ms: float | None = None
 
 
 class HealthResponse(BaseModel):

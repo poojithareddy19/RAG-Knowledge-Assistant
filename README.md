@@ -4,7 +4,7 @@ Natural-language questions answered from two kinds of source, with the evidence 
 
 Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with per-parameter QC, document RAG with citations and refusal, text-to-SQL over a PostgreSQL ARGO schema with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard and a FastAPI service. Not yet built: BGC parameters, a semantic layer over float metadata, and published evaluation numbers. See [Limitations](#limitations) and [Roadmap](#roadmap) for the honest list.
+> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard and a FastAPI service. Not yet built: BGC parameters and published evaluation numbers. See [Limitations](#limitations) and [Roadmap](#roadmap) for the honest list.
 
 ---
 
@@ -28,12 +28,13 @@ RAG solves the first. Text-to-SQL solves the second. Both fail the same way, by 
                    └────┬───────┬────┘
               documents │       │ data / chart
           ┌─────────────▼─┐   ┌─▼──────────────────────────┐
-          │ embed query   │   │ generate SQL (cached)      │
-          │ pgvector top-k│   │ validate: SELECT only,     │
-          │ cross-encoder │   │ allowed tables, real       │
-          │   rerank      │   │ columns, LIMIT capped      │
-          │ confidence    │   │ execute as read-only user  │
-          │   gate        │   │ with statement timeout     │
+          │ embed query   │   │ retrieve data summaries    │
+          │ pgvector top-k│   │   (what the db holds)      │
+          │ cross-encoder │   │ generate SQL (cached)      │
+          │   rerank      │   │ validate: SELECT only,     │
+          │ confidence    │   │ allowed tables, real       │
+          │   gate        │   │ columns, LIMIT capped      │
+          │               │   │ execute as read-only user  │
           └───────┬───────┘   └─────────┬──────────────────┘
                   │ below threshold?    │
               decline                 rows ──▶ optional chart
@@ -45,6 +46,18 @@ RAG solves the first. Text-to-SQL solves the second. Both fail the same way, by 
                            ▼
                   one JSON log line
 ```
+
+### The semantic layer
+
+A schema tells a model which columns exist. It cannot tell it that float 1901393 is real, worked the Arabian Sea, and stopped reporting in 2021. Without that, "what did 1901393 measure off Goa" is answered by a model guessing whether such a float exists.
+
+So every float and every region is summarised into a sentence, embedded, and stored in its own pgvector table ([`src/semantic/`](src/semantic/)):
+
+> ARGO float 1901393 is an APEX platform and part of project ARGO INDIA. It recorded 142 profiles from 2015-03-02 to 2021-11-18. It reported in the Arabian Sea and Bay of Bengal. Its measurements span 4.0 to 1998.0 decibars of pressure, roughly that depth in metres.
+
+The summaries closest to a question are retrieved and handed to the SQL generator before it writes anything, under an explicit instruction never to quote a number out of them. They resolve names and ranges; the query computes every value. Both UIs show which summaries were used, so the grounding is inspectable rather than invisible.
+
+They live in their own table rather than alongside document chunks, because a question about a policy document must not retrieve a float and a question about a float must not retrieve a policy document.
 
 The router ([`src/router/classifier.py`](src/router/classifier.py)) tries cheap regex rules first and only pays for a model call on the ambiguous cases. Its fallback route is configurable, so a router outage degrades to a known behaviour rather than an error.
 
@@ -102,6 +115,7 @@ RAG_Assistant/
 │   ├── retrieval/   retriever.py · reranker.py · confidence.py
 │   ├── generation/  prompt.py · llm.py · answer_generator.py
 │   ├── router/      classifier.py                        # documents | data | chart
+│   ├── semantic/    summaries.py · index.py              # what the db holds
 │   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py
 │   ├── charts/      builder.py
 │   ├── analytics/   trend_test.py · clustering.py · forecast.py
@@ -110,9 +124,10 @@ RAG_Assistant/
 │   ├── api/         main.py · schemas.py                 # FastAPI
 │   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
 ├── db/              001_schema.sql · 002_pgvector.sql · 003_roles.sql
-│                    004_argo_qc.sql
+│                    004_argo_qc.sql · 005_semantic_layer.sql
 │                    schema_catalog.md · queries/         # 12 reference queries
 ├── scripts/         load_argo_netcdf.py · load_argo.py
+│                    build_semantic_index.py
 │                    make_sample_data.py · run_ab_test.py
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
@@ -173,6 +188,16 @@ Or generate synthetic ARGO-shaped data with a planted 0.02 °C/year warming sign
 ```bash
 python scripts/make_sample_data.py
 ```
+
+### Build the semantic layer
+
+The summaries describe what is in the tables, so they are stale the moment new profiles land. Rebuild them after any load:
+
+```bash
+python scripts/build_semantic_index.py
+```
+
+Skipping this is not fatal. Retrieval returns nothing, and the SQL generator falls back to working from the schema alone, exactly as it did before the layer existed.
 
 ## Configuration
 
@@ -260,7 +285,9 @@ There is also a paired A/B harness ([`src/evaluation/ab_test.py`](src/evaluation
 | Router with rules before the model        | Most questions are unambiguous. Paying for a model call on those is latency and cost for nothing               |
 | Read-only role for generated SQL          | A validator bug becomes a failed query rather than a data-loss incident                                        |
 | Column check against `information_schema` | Read from the live database, not the markdown catalog, so it cannot drift away from the real tables            |
-| SQL cache keyed on prompt version         | Re-running a demo should be fast, but a changed prompt must invalidate everything cached under the old one     |
+| Summaries in their own table              | A question about a float must not retrieve a policy document, and the reverse                                  |
+| Context is named, never quoted            | The prompt forbids copying a number out of a summary, so every value in an answer comes from the query         |
+| SQL cache keyed on prompt version         | Re-running a demo should be fast, but a changed prompt must invalidate everything cached under the old one. The retrieved context is part of that key |
 | Chunking isolated per page                | A chunk straddling two pages makes its citation ambiguous. Per-page chunking keeps "page 42" honest            |
 | Multiplicative confidence                 | Secondary signals should modulate the primary one, never rescue it                                             |
 | Retrieval-based confidence                | LLMs are structurally uncalibrated about corpus coverage; retrieval signals measure fit directly and are free  |
@@ -279,7 +306,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Data.** Only core parameters are stored (pressure, temperature, salinity); BGC parameters such as oxygen, chlorophyll and nitrate are not modelled. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
 
-**Architecture.** The document and data paths are routed between, not combined. The vector store holds uploaded documents only; float and profile metadata are not summarised and embedded, so there is no semantic layer feeding SQL generation. A question needing both sources gets one.
+**Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
 **Retrieval and generation.** No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. Stateless: no conversational memory. No individual document deletion.
 
@@ -292,7 +319,8 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 - [x] NetCDF ingestion with `xarray`, carrying real QC flags through
 - [ ] BGC-ARGO parameters in the schema and catalog
 - [ ] Real QC flags on the CSV loader too
-- [ ] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
+- [x] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
+- [ ] Answer a single question from documents and data together
 - [ ] Expand both gold sets, fill in expected values, publish the numbers
 - [ ] Trajectory map and depth-profile plots
 - [ ] Proper region assignment instead of lat/lon inequalities

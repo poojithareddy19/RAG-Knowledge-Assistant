@@ -61,6 +61,9 @@ router:
   fallback: "documents"
   max_rows: 5000
   timeout_ms: 5000
+  # Wall clock allowed for the model to produce SQL. A cold model load
+  # can take most of this on its own.
+  gen_timeout_seconds: 120
 
 sql:
   allowed_tables:
@@ -69,6 +72,20 @@ sql:
     - measurements
   model: "llama3.1:latest"
   default_limit: 500
+  max_rows: 5000
+  timeout_ms: 5000
+  # Wall clock allowed for the model to produce SQL. A cold model load
+  # can take most of this on its own.
+  gen_timeout_seconds: 120
+
+semantic:
+  # Natural-language summaries of what the measurements tables hold, retrieved
+  # and handed to the SQL generator so it is not guessing what exists.
+  enabled: true
+  table: "data_summaries"
+  top_k: 4
+  # Below this cosine similarity a summary is noise in the prompt, not context.
+  min_similarity: 0.25
 
 cache:
   enabled: true
