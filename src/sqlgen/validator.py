@@ -92,7 +92,7 @@ def validate(
         _check_columns(lowered, scan, column_catalog)
 
     return _cap_limit(
-        str(stmt).strip(),
+        _drop_pointless_order_by(str(stmt).strip()),
         max_limit,
         default_limit,
     )
@@ -243,6 +243,34 @@ def _check_columns(lowered, scan, column_catalog):
                 f"{table} has no column {column!r} "
                 f"(referenced as {qualifier}.{column})"
             )
+
+
+_AGGREGATE = re.compile(r"\b(?:count|sum|avg|min|max)\s*\(", re.I)
+_WINDOW = re.compile(r"\bover\s*\(", re.I)
+
+# Only a trailing ORDER BY, and only one with no parenthesis in it, so an
+# ORDER BY belonging to a subquery or a window frame is never touched.
+_TRAILING_ORDER_BY = re.compile(r"\border\s+by\b[^()]*$", re.I)
+
+
+def _drop_pointless_order_by(sql):
+    """Remove an ORDER BY that PostgreSQL will reject anyway.
+
+    ``SELECT max(temperature_c) FROM measurements ORDER BY temperature_c``
+    aggregates to one row, so ordering it is meaningless, and ordering by a
+    column that is not grouped is an error rather than a no-op. The model
+    emits this often enough that repairing it turns a guaranteed failure into
+    the answer it was already trying to give.
+    """
+    if not _AGGREGATE.search(sql):
+        return sql
+
+    lowered = sql.lower()
+
+    if "group by" in lowered or _WINDOW.search(sql):
+        return sql
+
+    return _TRAILING_ORDER_BY.sub("", sql).strip()
 
 
 def _cap_limit(sql, max_limit, default_limit):

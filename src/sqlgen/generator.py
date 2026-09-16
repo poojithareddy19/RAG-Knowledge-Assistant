@@ -25,7 +25,9 @@ Rules:
   BOTH ends. "in 2020" means obs_time >= '2020-01-01' AND obs_time <
   '2021-01-01', never an open-ended >= alone.
 - Whenever the result is a series or a grouped breakdown, end with ORDER BY on
-  the grouping column so the rows come back in a meaningful order.
+  the grouping column so the rows come back in a meaningful order. Do not add
+  ORDER BY to a query that returns one aggregate row and has no GROUP BY:
+  ordering by a column you did not group by is rejected by PostgreSQL.
 - If the question cannot be answered from this schema, output exactly:
 UNANSWERABLE
 """
@@ -47,7 +49,7 @@ They are background, not query terms:
 """
 
 # Bump when SYSTEM or CONTEXT_RULE changes so cached SQL is not reused.
-PROMPT_VERSION = "4"
+PROMPT_VERSION = "5"
 
 FENCE = re.compile(
     r"```(?:sql)?(.*?)```",

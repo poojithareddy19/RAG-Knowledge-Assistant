@@ -193,6 +193,46 @@ def test_column_inside_extract_is_still_checked():
         vc("SELECT EXTRACT(YEAR FROM p.bogus) FROM profiles p")
 
 
+def test_order_by_on_a_bare_aggregate_is_dropped():
+    # PostgreSQL rejects this outright, and ordering one row means nothing.
+    out = v("SELECT max(temperature_c) FROM measurements ORDER BY temperature_c")
+
+    assert "order by" not in out.lower()
+    assert "max(temperature_c)" in out.lower()
+
+
+def test_order_by_survives_a_grouped_aggregate():
+    out = v(
+        "SELECT region, count(*) FROM profiles GROUP BY region ORDER BY region"
+    )
+
+    assert "order by region" in out.lower()
+
+
+def test_order_by_survives_a_window_function():
+    out = v(
+        "SELECT float_id, rank() OVER (ORDER BY cycle_number) FROM profiles "
+        "ORDER BY float_id"
+    )
+
+    assert out.lower().count("order by") == 2
+
+
+def test_order_by_survives_when_nothing_is_aggregated():
+    out = v("SELECT float_id FROM profiles ORDER BY float_id")
+
+    assert "order by float_id" in out.lower()
+
+
+def test_a_subquery_order_by_is_not_stripped():
+    out = v(
+        "SELECT max(t) FROM (SELECT temperature_c AS t FROM measurements "
+        "ORDER BY temperature_c) s"
+    )
+
+    assert "order by temperature_c" in out.lower()
+
+
 def _reference_sql(path):
     """The SQL a reference file contributes, minus its leading question line.
 
