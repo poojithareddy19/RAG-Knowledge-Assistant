@@ -4,7 +4,7 @@ Natural-language questions answered from two kinds of source, with the evidence 
 
 Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and a 52-question text-to-SQL benchmark with [published results](#results). The largest remaining gaps are that a single question is answered from documents or data but never both, and that no BGC-ARGO float has been loaded yet, so those columns are all NULL. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and a 52-question text-to-SQL benchmark scoring [0.739 execution accuracy](#results). The largest remaining gaps are that a single question is answered from documents or data but never both, and that no BGC-ARGO float has been loaded yet, so those columns are all NULL. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -275,39 +275,43 @@ summary, by_bucket, detail = evaluate_file()
 
 ### Results
 
-47 questions, `llama3.1:8b` via Ollama, against 40 synthetic floats and 233,600 measurements. Single run.
-
-> These numbers predate the biogeochemical columns. The gold set is now 52 questions with a `bgc` bucket, so the table below describes the system as it was before BGC landed and needs a re-run to describe it now.
+52 questions, `llama3.1:8b` via Ollama, against 40 synthetic floats and 233,600 measurements. Single run.
 
 | Metric | Value |
 | ------------------------- | ----- |
-| **Execution accuracy**    | **0.707** |
+| **Execution accuracy**    | **0.739** |
 | Validation pass rate      | 1.000 |
-| Execution rate            | 0.976 |
-| Correct refusal rate      | 1.000 |
+| Execution rate            | 0.957 |
+| Correct refusal rate      | 0.833 |
 | False refusal rate        | 0.000 |
 | Median latency            | 26.5 s |
-| p95 latency               | 44.7 s |
+| p95 latency               | 47.3 s |
 
 | Bucket | Questions | Execution accuracy |
 | ------------ | --- | ----- |
 | easy         | 8   | 1.000 |
 | filter       | 8   | 1.000 |
+| bgc          | 5   | 1.000 |
 | qc           | 5   | 0.800 |
-| join         | 8   | 0.750 |
-| groupby      | 6   | 0.333 |
+| join         | 8   | 0.625 |
+| groupby      | 6   | 0.500 |
 | window       | 6   | 0.167 |
-| unanswerable | 6   | 6/6 refused |
+| unanswerable | 6   | 5/6 refused |
 
-Accuracy falls as query complexity rises, and the fall is steep. Single-table aggregates and filters are perfect. **Window functions are 1 of 6 across two separate runs**, which is the most stable finding here: this model cannot reliably write `lag`, ranking or first/last-value SQL against this schema. That is a model-capability ceiling, not a prompt that needs another sentence.
+Accuracy falls as query complexity rises, and the fall is steep. Single-table aggregates and filters are perfect. **Window functions are 1 of 6, the same in three separate runs**, which is the most stable finding here: this model cannot reliably write `lag`, ranking or first/last-value SQL against this schema. That is a model-capability ceiling, not a prompt that needs another sentence.
 
-Validation pass rate is 1.000 while accuracy is 0.707. Every generated query was well formed, safe and ran, and 29% still answered the wrong question. That gap is the entire argument for measuring results instead of liveness.
+Validation pass rate is 1.000 while accuracy is 0.739. Every generated query was well formed, safe and ran, and a quarter still answered the wrong question. That gap is the entire argument for measuring results instead of liveness.
+
+**The one refusal that failed is the most serious result here.** Asked for the seafloor depth beneath each float, the model wrote a confident query against a schema that has no bathymetry. Five of six unanswerable questions were refused, including pH and dissolved oxygen before BGC existed, but a single fabricated query matters more than a point of accuracy in a system whose premise is declining rather than guessing.
+
+A previous run of the 47-question set scored 0.707. The two are not comparable: the gold set changed, two unwinnable questions were replaced and a `bgc` bucket was added.
 
 ### What these numbers do not tell you
 
 - **Single run per configuration.** Temperature is 0, but any prompt change reshuffles outputs, so individual question flips are weak evidence. Treat differences under about five points as noise until someone runs it three times.
 - **Execution accuracy has false positives.** "Number of profiles per year" once scored correct with a query that joined `measurements` and filtered `pressure_dbar < 10`. Every profile happens to have exactly one measurement above 10 decibars in this dataset, so a wrong query collapsed to the right number. A coincidence in the data can mark a wrong query right.
 - **Synthetic data flatters some questions and breaks others.** Every float has exactly 730 profiles, so any "which float has the most" question is a 40-way tie with no single right answer. Two such questions had to be replaced. Real ARGO data would not have this shape.
+- **The `bgc` bucket scores 1.000 on empty columns.** No BGC-ARGO float has been loaded, so every biogeochemical column is NULL and the reference and generated queries agree by both finding nothing. That result shows the model targets the right columns and stops refusing; it does not show the arithmetic is right.
 - **The document retrieval gold set is still a template.** `questions.csv` is five rows referencing documents not committed here. Only the SQL side has real numbers.
 
 ## Beyond retrieval
@@ -356,7 +360,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Charts.** Line and bar only, chosen from result shape. No trajectory map and no depth-profile plot, which are the two views this domain actually expects.
 
-**Evaluation.** Text-to-SQL scores 0.707 execution accuracy, and complex queries are much worse than that average suggests: window functions are 1 of 6. Every number comes from a single run against synthetic data. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.739 execution accuracy, and complex queries are much worse than that average suggests: window functions are 1 of 6. One unanswerable question in six still gets a fabricated query rather than a refusal. Every number comes from a single run against synthetic data. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 
@@ -368,6 +372,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 - [ ] Answer a single question from documents and data together
 - [x] Expand the SQL gold set to 47 questions with reference queries, publish the numbers
 - [ ] Repeat runs so a difference can be told from noise
+- [ ] Close the last refusal gap: a bathymetry question still gets a fabricated query
 - [ ] Few-shot window-function examples, or a stronger model, for the bucket scoring 0.167
 - [ ] A document retrieval gold set that is not a five-row template
 - [ ] Trajectory map and depth-profile plots
