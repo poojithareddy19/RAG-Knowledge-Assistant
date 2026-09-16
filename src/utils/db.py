@@ -23,6 +23,24 @@ def _url(readonly):
     return url
 
 
+def _configure(conn):
+    """Teach a new connection the pgvector types.
+
+    This has to happen before any cursor is made: a cursor captures the
+    connection's adapter map when it is created, so registering afterwards has
+    no effect on it and numpy arrays fail to adapt. Running it as the pool's
+    configure hook means it happens once per physical connection, ahead of
+    every cursor that connection will ever produce.
+    """
+    try:
+        from pgvector.psycopg import register_vector
+
+        register_vector(conn)
+    except Exception:
+        # A database without the vector extension still serves the SQL path.
+        pass
+
+
 def get_pool(readonly=False):
     """One pool per role, created on first use."""
     name = "ro" if readonly else "rw"
@@ -33,6 +51,7 @@ def get_pool(readonly=False):
             min_size=1,
             max_size=5,
             open=True,
+            configure=_configure,
         )
 
     return _pools[name]

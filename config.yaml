@@ -85,7 +85,9 @@ semantic:
   table: "data_summaries"
   top_k: 4
   # Below this cosine similarity a summary is noise in the prompt, not context.
-  min_similarity: 0.25
+  # bge-small scores unrelated text around 0.45, so a lower floor lets an
+  # off-topic question pull in summaries that have nothing to do with it.
+  min_similarity: 0.55
 
 cache:
   enabled: true

@@ -147,6 +147,12 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+`sentence-transformers` pulls in torch, and on Windows the default PyPI wheel bundles CUDA at roughly 2.4 GB. The configured embedding model runs on CPU, so install the CPU build first and skip the download:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
 Start PostgreSQL with pgvector. The schema, extension and read-only role in `db/` are applied automatically on first boot.
 
 ```bash

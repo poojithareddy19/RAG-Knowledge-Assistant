@@ -6,7 +6,7 @@ so it is tested directly rather than through a database.
 
 from datetime import date
 
-from src.semantic.index import Summary, as_context
+from src.semantic.index import IDENTIFIER, Summary, as_context
 from src.semantic.summaries import summarise_float, summarise_region
 from src.sqlgen.generator import build_prompt, cache_version
 
@@ -130,3 +130,17 @@ def test_no_context_keeps_the_bare_prompt_version():
 
     assert cache_version("") == PROMPT_VERSION
     assert cache_version("   ") == PROMPT_VERSION
+
+
+def test_float_identifiers_are_picked_out_of_a_question():
+    assert IDENTIFIER.findall("what did float 2900007 measure") == ["2900007"]
+    assert IDENTIFIER.findall("compare 2900007 and 2900012") == [
+        "2900007",
+        "2900012",
+    ]
+
+
+def test_years_and_depths_are_not_mistaken_for_identifiers():
+    # Four digits is a year or a pressure, not a WMO number. Treating one as a
+    # float id would pull an unrelated summary into the prompt.
+    assert IDENTIFIER.findall("mean temperature in 2020 below 1000 dbar") == []

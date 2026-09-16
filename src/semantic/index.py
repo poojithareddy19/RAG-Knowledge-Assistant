@@ -11,10 +11,10 @@ the two retrievals cannot contaminate each other.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
-from pgvector.psycopg import register_vector
 
 from src.embeddings.embedding_model import get_embedding_model
 from src.semantic.summaries import collect
@@ -40,6 +40,15 @@ FROM {table}
 ORDER BY embedding <=> %s
 LIMIT %s
 """
+
+BY_ID = """
+SELECT subject_kind, subject_id, content
+FROM {table}
+WHERE subject_id = ANY(%s)
+"""
+
+# A WMO float identifier. Long enough not to catch a year or a depth.
+IDENTIFIER = re.compile(r"\b\d{5,}\b")
 
 
 @dataclass
@@ -76,7 +85,6 @@ class SemanticIndex:
         ]
 
         with cursor() as cur:
-            register_vector(cur.connection)
             cur.executemany(UPSERT.format(table=self.table), rows)
 
         kinds: dict[str, int] = {}
@@ -87,21 +95,31 @@ class SemanticIndex:
         return {"subjects": len(subjects), **kinds}
 
     def search(self, question: str, k: int | None = None) -> list[Summary]:
-        """The summaries closest to a question, above the similarity floor."""
+        """The summaries a question is about: named ones first, then nearest.
+
+        An identifier is looked up literally rather than embedded. Float
+        summaries are near-identical sentences whose only distinguishing token
+        is a long number, which is exactly what embeddings represent worst:
+        asking for float 2900007 scores it 0.703 against 0.701 for an unrelated
+        float. A question that names a float should get that float.
+        """
+        limit = k or self.top_k
+
+        named = self._by_identifier(question)
+
         vector = np.asarray(
             get_embedding_model().embed_query(question),
             dtype=np.float32,
         ).reshape(-1)
 
         with cursor(readonly=True) as cur:
-            register_vector(cur.connection)
             cur.execute(
                 SEARCH.format(table=self.table),
-                (vector, vector, k or self.top_k),
+                (vector, vector, limit),
             )
             rows = cur.fetchall()
 
-        return [
+        nearest = [
             Summary(
                 kind=kind,
                 subject=subject,
@@ -110,6 +128,39 @@ class SemanticIndex:
             )
             for kind, subject, content, similarity in rows
             if similarity >= self.min_similarity
+        ]
+
+        seen = {(hit.kind, hit.subject) for hit in named}
+
+        for hit in nearest:
+            if (hit.kind, hit.subject) not in seen:
+                named.append(hit)
+                seen.add((hit.kind, hit.subject))
+
+        return named[:limit]
+
+    def _by_identifier(self, question: str) -> list[Summary]:
+        """Summaries whose subject the question names outright."""
+        identifiers = IDENTIFIER.findall(question)
+
+        if not identifiers:
+            return []
+
+        with cursor(readonly=True) as cur:
+            cur.execute(
+                BY_ID.format(table=self.table),
+                (identifiers,),
+            )
+            rows = cur.fetchall()
+
+        return [
+            Summary(
+                kind=kind,
+                subject=subject,
+                text=content,
+                score=1.0,
+            )
+            for kind, subject, content in rows
         ]
 
     def count(self) -> int:

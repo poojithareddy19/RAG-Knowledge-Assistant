@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 
 import numpy as np
-from pgvector.psycopg import register_vector
 
 from src.utils.db import cursor
 from src.utils.schemas import Chunk, RetrievedChunk
@@ -69,7 +68,6 @@ class PgVectorStore:
         """
 
         with cursor() as cur:
-            register_vector(cur.connection)
             cur.executemany(sql, rows)
 
     @staticmethod
@@ -117,7 +115,6 @@ class PgVectorStore:
         """
 
         with cursor(readonly=True) as cur:
-            register_vector(cur.connection)
             cur.execute(sql, (vec, vec, k))
             rows = cur.fetchall()
 

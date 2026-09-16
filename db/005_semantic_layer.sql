@@ -16,7 +16,11 @@ CREATE TABLE IF NOT EXISTS data_summaries (
     UNIQUE (subject_kind, subject_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_summaries_embedding
-    ON data_summaries
-    USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
+-- Deliberately no vector index.
+--
+-- This table holds one row per float and per region, so it is thousands of
+-- rows at most and an exact scan answers in under a millisecond. An ivfflat
+-- index here is actively harmful: with lists = 100 over a few dozen rows
+-- nearly every list is empty, and the default single probe then scans an empty
+-- one and returns nothing relevant. Postgres warns about this at creation
+-- time. Revisit with HNSW only if this table ever reaches six figures.
