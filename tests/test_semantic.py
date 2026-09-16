@@ -159,11 +159,28 @@ def test_different_context_cannot_share_a_cache_entry():
     assert cache_version("- A.") != cache_version("- B.")
 
 
-def test_no_context_keeps_the_bare_prompt_version():
+def test_version_is_stable_for_an_unchanged_prompt():
     from src.sqlgen.generator import PROMPT_VERSION
 
-    assert cache_version("") == PROMPT_VERSION
-    assert cache_version("   ") == PROMPT_VERSION
+    assert cache_version("").startswith(PROMPT_VERSION)
+    assert cache_version("") == cache_version("   ")
+
+
+def test_a_changed_schema_catalog_invalidates_the_cache(monkeypatch):
+    # The catalog is part of the prompt. Leaving it out of the key once meant
+    # adding the BGC columns changed what the model was told while every
+    # cached entry still looked valid.
+    import src.sqlgen.generator as generator
+
+    before = cache_version("")
+
+    monkeypatch.setattr(
+        generator,
+        "build_context",
+        lambda include_examples=True: "a different schema",
+    )
+
+    assert cache_version("") != before
 
 
 def test_float_identifiers_are_picked_out_of_a_question():

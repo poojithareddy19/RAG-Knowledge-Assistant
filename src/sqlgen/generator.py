@@ -90,16 +90,24 @@ def build_prompt(
     return "\n\n".join(sections)
 
 
-def cache_version(context: str = "") -> str:
-    """Prompt version, extended by a digest of the retrieved context.
+def cache_version(
+    context: str = "",
+    include_examples: bool = True,
+) -> str:
+    """Prompt version, extended by a digest of everything but the question.
 
-    Two identical questions asked against different retrieved context are
-    different prompts, so they must not share a cache entry.
+    One rule: if any part of the prompt other than the question changes, a
+    cached answer is not reused. That covers the retrieved context, the schema
+    catalog, the worked examples and the instructions themselves.
+
+    Keying only on the hand-maintained version constant was not enough. Adding
+    the biogeochemical columns to the catalog changed what the model was told
+    and left every cached entry looking valid, so the cache would have served
+    SQL written by a model that had never heard of those columns.
     """
-    if not context.strip():
-        return PROMPT_VERSION
-
-    digest = hashlib.sha256(context.strip().encode()).hexdigest()[:12]
+    digest = hashlib.sha256(
+        build_prompt("", context, include_examples).encode()
+    ).hexdigest()[:12]
 
     return f"{PROMPT_VERSION}:{digest}"
 
@@ -132,7 +140,7 @@ def generate_sql(
         "llama3.1:latest",
     )
 
-    version = cache_version(context)
+    version = cache_version(context, include_examples)
 
     if use_cache:
         hit = cache.get(
