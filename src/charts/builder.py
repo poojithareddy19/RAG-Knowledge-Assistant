@@ -15,6 +15,44 @@ def to_frame(result):
     )
 
 
+# More than this many series and the chart is unreadable anyway, so leave it
+# as a table rather than drawing spaghetti.
+MAX_SERIES = 12
+
+
+def spread_categories(df):
+    """Turn a long ``(x, category, value)`` result into one column per category.
+
+    A grouped query returns one row per x per group. Plotting that directly
+    draws a single line that jumps between groups at every x, which looks like
+    a sawtooth and means nothing. Each group has to become its own series.
+    """
+    if df.shape[1] != 3:
+        return df
+
+    x, category, value = df.columns
+
+    if pd.api.types.is_numeric_dtype(df[category]):
+        return df
+
+    if not pd.api.types.is_numeric_dtype(df[value]):
+        return df
+
+    if df[category].nunique() > MAX_SERIES:
+        return df
+
+    wide = df.pivot_table(
+        index=x,
+        columns=category,
+        values=value,
+        aggfunc="mean",
+    )
+
+    wide.columns.name = None
+
+    return wide.reset_index()
+
+
 def pick_chart(df):
     """Decide a chart type from the shape of the data."""
     if df.shape[1] < 2:
@@ -47,6 +85,8 @@ def render(result, title=None):
             df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0])
         except (ValueError, TypeError):
             pass
+
+    df = spread_categories(df)
 
     kind = pick_chart(df)
 
