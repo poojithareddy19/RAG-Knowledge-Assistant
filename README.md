@@ -1,53 +1,68 @@
-# Production RAG Knowledge Assistant
+# Grounded Data Assistant
 
-Grounded question-answering over your own documents, with citations, confidence estimation, graceful refusal, evaluation and monitoring built in. Designed as a production-style reference implementation rather than a "chat with PDF" demo.
+Natural-language questions answered from two kinds of source, with the evidence shown either way: uploaded documents answered by retrieval with citations, and ARGO ocean float measurements answered by generated SQL that you can read before you believe the numbers.
 
-Every answer is attributed to a specific document, page and passage. When the retrieved evidence does not support an answer, the system declines instead of guessing.
+Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** The retrieval and generation pipeline, Streamlit dashboard, structured logging, monitoring analytics, and the retrieval-metrics evaluation harness are implemented and unit-tested. LLM-judged generation metrics (faithfulness, groundedness, answer relevance) are scaffolded and flagged as the next milestone. See [Roadmap](#roadmap).
+> **Build status.** Working end to end: document RAG with citations and refusal, text-to-SQL over a PostgreSQL ARGO schema with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard and a FastAPI service. Not yet built: NetCDF ingestion (data arrives as ERDDAP CSV today), BGC parameters, a semantic layer over float metadata, and published evaluation numbers. See [Limitations](#limitations) and [Roadmap](#roadmap) for the honest list.
 
 ---
 
 ## Problem
 
-Organisations keep answers buried in policies, handbooks, contracts, SOPs and manuals. Keyword search cannot reach them, and a general LLM asked about private data will produce a fluent, plausible, wrong answer with no way for the reader to check it.
+Two versions of the same problem, which is why they share a codebase.
 
-In domains like HR, finance and compliance, being confidently wrong is worse than saying nothing. This system is built around that constraint:
+Organisations keep answers buried in policies, handbooks and SOPs. Keyword search cannot reach them, and a general LLM asked about private data produces a fluent, plausible, wrong answer with no way to check it.
 
-- retrieves only from documents you upload
-- cites the exact document, page, chunk and passage behind every answer
-- attaches a confidence score derived from retrieval signals, not from asking the model how sure it is
-- declines to answer when evidence is insufficient, via two independent guards
-- logs every interaction as structured JSON for monitoring and evaluation
+Scientific agencies keep answers buried in numerical archives. ARGO float data is fully open, but reaching it means knowing the schema, the QC conventions and the query language. A researcher, student or policymaker who can describe what they want in a sentence cannot get it.
+
+RAG solves the first. Text-to-SQL solves the second. Both fail the same way, by producing something confident and unverifiable, so both are built here with the evidence surfaced and a refusal path.
 
 ## Architecture
 
 ```
-question
-   │
-   ▼
-┌──────────────┐   ┌───────────────┐   ┌──────────────┐   ┌──────────────┐
-│  Embed query │──▶│ FAISS retrieve│──▶│  Confidence  │──▶│  gate < thr? │
-└──────────────┘   │   (top-k)     │   │  estimation  │   └──────┬───────┘
-                   └───────────────┘   └──────────────┘          │
-                                                        decline ◀─┘ (fallback)
-                                                            │
-                                                        proceed
-                                                            ▼
-                                              ┌───────────────────────────┐
-                                              │  Grounded LLM generation  │
-                                              │ (citation-forcing prompt) │
-                                              └────────────┬──────────────┘
-                                                           ▼
-                                    answer + citations + confidence + JSON log
+                         question
+                            │
+                   ┌────────▼────────┐
+                   │     router      │  rules first, model fallback
+                   └────┬───────┬────┘
+              documents │       │ data / chart
+          ┌─────────────▼─┐   ┌─▼──────────────────────────┐
+          │ embed query   │   │ generate SQL (cached)      │
+          │ pgvector top-k│   │ validate: SELECT only,     │
+          │ cross-encoder │   │ allowed tables, real       │
+          │   rerank      │   │ columns, LIMIT capped      │
+          │ confidence    │   │ execute as read-only user  │
+          │   gate        │   │ with statement timeout     │
+          └───────┬───────┘   └─────────┬──────────────────┘
+                  │ below threshold?    │
+              decline                 rows ──▶ optional chart
+                  │                     │
+                  ▼                     ▼
+        answer + citations        table + the SQL that made it
+                  │                     │
+                  └────────┬────────────┘
+                           ▼
+                  one JSON log line
 ```
 
-### Two independent hallucination guards
+The router ([`src/router/classifier.py`](src/router/classifier.py)) tries cheap regex rules first and only pays for a model call on the ambiguous cases. Its fallback route is configurable, so a router outage degrades to a known behaviour rather than an error.
 
-1. **Retrieval-side.** A configurable confidence threshold over retrieval signals, evaluated before the LLM is called. Unanswerable questions are refused without spending a token.
-2. **Generation-side.** The prompt requires the model to emit `INSUFFICIENT_CONTEXT` when the retrieved passages do not support an answer, checked after generation.
+### Two independent hallucination guards, on the document path
 
-Two guards rather than one because they fail independently. A single guard is a single point of failure, and the two catch different failure modes: the first catches "nothing relevant was retrieved," the second catches "something was retrieved but it does not actually answer the question."
+1. **Retrieval-side.** A confidence threshold over retrieval signals, evaluated before the LLM is called. Unanswerable questions are refused without spending a token.
+2. **Generation-side.** The prompt requires the model to emit `INSUFFICIENT_CONTEXT` when the passages do not support an answer, checked after generation.
+
+Two rather than one because they fail independently: the first catches "nothing relevant was retrieved," the second catches "something was retrieved but it does not answer the question."
+
+### Four layers of protection, on the data path
+
+1. **Prompt.** Schema, conventions and worked examples, with an explicit `UNANSWERABLE` escape hatch.
+2. **Validator** ([`src/sqlgen/validator.py`](src/sqlgen/validator.py)). One statement, `SELECT` only, no forbidden keywords or identifiers, no chaining, only allowed tables, qualified columns checked against the live `information_schema`, and a `LIMIT` capped or injected.
+3. **Database role** ([`db/003_roles.sql`](db/003_roles.sql)). Generated SQL runs as `gda_ro`, which holds `SELECT` and nothing else, with writes explicitly revoked.
+4. **Connection.** `read_only` on the session plus a `statement_timeout`, so a pathological query cannot hold the pool.
+
+Layer 2 alone would be a regex arms race. Layers 3 and 4 mean a validator bug is not a security incident.
 
 Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_decisions.md).
 
@@ -55,17 +70,22 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 
 ## Technology stack
 
-| Concern      | Choice                                   | Notes                  |
-| ------------ | ---------------------------------------- | ---------------------- |
-| Language     | Python 3.12+                             |                        |
-| Chunking     | `langchain-text-splitters`               | isolated to one file   |
-| Embeddings   | `sentence-transformers` (BAAI/bge-small) | swappable via config   |
-| Vector store | FAISS (`IndexFlatIP`, cosine)            | Chroma-ready interface |
-| LLM          | OpenAI / Gemini / Ollama                 | selected via `.env`    |
-| UI           | Streamlit (7-page dashboard)             |                        |
-| Evaluation   | custom retrieval metrics (+ Ragas path)  |                        |
-| Logging      | structured JSONL + `logging`             |                        |
-| Config       | `config.yaml` + environment variables    |                        |
+| Concern         | Choice                                    | Notes                             |
+| --------------- | ----------------------------------------- | --------------------------------- |
+| Language        | Python 3.12+                              |                                   |
+| Structured data | PostgreSQL 16                             | floats → profiles → measurements  |
+| Vector store    | pgvector, cosine                          | FAISS backend still selectable    |
+| Embeddings      | `sentence-transformers` (BAAI/bge-small)  | swappable via config              |
+| Reranking       | cross-encoder `ms-marco-MiniLM-L-6-v2`    | on by default                     |
+| Chunking        | `langchain-text-splitters`                | isolated to one file              |
+| LLM             | Ollama / OpenAI / Gemini                  | selected via `.env`               |
+| Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
+| Charts          | matplotlib, chosen from result shape      | PNG, served to both UIs           |
+| API             | FastAPI + Pydantic                        | same service object as Streamlit  |
+| UI              | Streamlit (8 pages)                       |                                   |
+| Evaluation      | retrieval metrics + SQL execution metrics |                                   |
+| Logging         | structured JSONL                          |                                   |
+| Config          | `config.yaml` + environment overrides     |                                   |
 
 ## Project structure
 
@@ -73,48 +93,74 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 RAG_Assistant/
 ├── app.py                     # Streamlit dashboard (presentation only)
 ├── config.yaml                # all tunable behaviour
-├── requirements.txt
+├── docker-compose.yml         # pgvector Postgres + the API
 ├── src/
 │   ├── ingestion/   loader.py · chunker.py
 │   ├── embeddings/  embedding_model.py
-│   ├── vectorstore/ vectordb.py            # FAISS + metadata + persistence
+│   ├── vectorstore/ pgvector_store.py · vectordb.py      # pgvector or FAISS
 │   ├── retrieval/   retriever.py · reranker.py · confidence.py
 │   ├── generation/  prompt.py · llm.py · answer_generator.py
-│   ├── evaluation/  metrics.py · evaluator.py
+│   ├── router/      classifier.py                        # documents | data | chart
+│   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py
+│   ├── charts/      builder.py
+│   ├── analytics/   trend_test.py · clustering.py · forecast.py
+│   ├── evaluation/  metrics.py · evaluator.py · sql_metrics.py · ab_test.py
 │   ├── monitoring/  logger.py · analytics.py
-│   └── utils/       config.py · schemas.py · pipeline.py   # service facade
-├── data/            raw/ processed/ vector_store/ evaluation/
-├── tests/           test_core.py
-└── docs/            design_decisions.md
+│   ├── api/         main.py · schemas.py                 # FastAPI
+│   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
+├── db/              001_schema.sql · 002_pgvector.sql · 003_roles.sql
+│                    schema_catalog.md · queries/         # 12 reference queries
+├── scripts/         load_argo.py · make_sample_data.py · run_ab_test.py
+├── data/            raw/ processed/ evaluation/ cache/
+└── tests/
 ```
 
-Seven decoupled packages communicating through typed dataclass contracts, with a `RAGService` facade that keeps the Streamlit layer free of business logic.
+Everything routes through `RAGService` in [`src/utils/pipeline.py`](src/utils/pipeline.py). Streamlit and FastAPI both call that one object, so the web page and the API cannot drift apart.
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/poojithareddy19/RAG_Assistant.git
-cd RAG_Assistant
+git clone https://github.com/poojithareddy19/RAG-Knowledge-Assistant.git
+cd RAG-Knowledge-Assistant
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+```
+
+Start PostgreSQL with pgvector. The schema, extension and read-only role in `db/` are applied automatically on first boot.
+
+```bash
+docker compose up -d db
+```
+
+The default provider is Ollama, which needs no API key:
+
+```bash
+ollama pull llama3.1
+```
+
+### Load ocean data
+
+Either load a real ARGO export from ERDDAP tabledap:
+
+```bash
+python scripts/load_argo.py path/to/argo_export.csv
+```
+
+Or generate synthetic ARGO-shaped data with a planted 0.02 °C/year warming signal, which is useful for checking that the trend tests detect what they should:
+
+```bash
+python scripts/make_sample_data.py
 ```
 
 ## Configuration
 
-- **`config.yaml`** controls behaviour: chunk size and overlap, embedding model, top-k, confidence weights and threshold, provider and model defaults.
-- **Environment variables** hold secrets and provider selection. Any `SECTION__KEY` variable overrides the matching `config.yaml` value, for example `RETRIEVAL__TOP_K=8`.
+- **`config.yaml`** holds behaviour: chunk size, embedding model, top-k, confidence weights and threshold, router and SQL limits, cache TTL.
+- **`.env`** holds secrets, provider selection and database URLs. Any `SECTION__KEY` variable overrides the matching `config.yaml` value, for example `RETRIEVAL__TOP_K=8`.
 
-Create a `.env` file in the project root:
-
-```bash
-GENERATION__PROVIDER=openai      # openai | gemini | ollama
-GENERATION__MODEL=gpt-4o-mini
-OPENAI_API_KEY=sk-...
-```
-
-Ollama requires no key. Run a local model and set `GENERATION__PROVIDER=ollama`.
+Two database URLs are required. `DATABASE__URL` owns the schema and runs ingestion; `DATABASE__READONLY_URL` is what generated SQL executes as. Keeping them separate is the point.
 
 ## Running
 
@@ -122,9 +168,17 @@ Ollama requires no key. Run a local model and set `GENERATION__PROVIDER=ollama`.
 streamlit run app.py
 ```
 
-Dashboard pages: Home, Upload, Knowledge Base, Ask, Evaluation, Monitoring, Settings.
+Pages: Home, Upload Documents, Knowledge Base, Ask Questions, Ocean Data, Evaluation, Monitoring, Settings.
 
-Upload documents (PDF, DOCX, TXT, MD), then ask questions. Each answer shows its citations, a confidence meter, the retrieved chunks with similarity scores, and the exact prompt sent to the model. That last item matters: if an answer looks wrong, you can see immediately whether the retrieval failed or the generation did.
+Or the HTTP service:
+
+```bash
+uvicorn src.api.main:app --reload
+```
+
+`POST /ask` takes `{"question": "...", "route_override": null}` and returns the answer with citations or with the generated SQL, rows and timings. `GET /health` reports indexed documents, measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
+
+Both UIs show the same two things the answer depends on: for documents, the retrieved chunks with similarity scores and the exact prompt sent to the model; for data, the SQL. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
 
 ## Testing
 
@@ -132,84 +186,99 @@ Upload documents (PDF, DOCX, TXT, MD), then ask questions. Each answer shows its
 pytest -q
 ```
 
-Covers the deterministic core: metrics, chunking, confidence estimation and FAISS operations. No API key or GPU required, since the FAISS test uses a fake embedder.
+Covers the deterministic core: chunking, metrics, confidence, vector-store contract, router rules, SQL cache and the SQL validator. No API key, database or GPU required. The validator suite runs every query in `db/queries/` through the validator, so a reference query the validator would reject fails the build.
 
 ---
 
 ## Confidence and refusal
 
-Confidence combines three interpretable retrieval signals, weighted via config and normalised to 0-1:
+Confidence combines three interpretable retrieval signals, normalised to 0-1:
 
 - **mean similarity** across the top-k retrieved chunks
 - **support**, the fraction of top-k chunks above a similarity floor
 - **spread**, derived from score variance
 
-Below `confidence.answer_threshold` the system returns the closest passages plus an explanation rather than an answer.
+The combination is **multiplicative, not additive** ([`src/retrieval/confidence.py`](src/retrieval/confidence.py)). Mean similarity is the primary signal; support and spread are folded into a 0.5-1.0 multiplier that can penalise a strong primary signal but cannot manufacture one. Below a hard floor of `MIN_MEAN_SIM = 0.28` the score is zero regardless of the other two.
 
-Retrieval signals rather than asking the LLM to self-report, because a model has no view of what is in the corpus. It cannot know that the corpus lacks an answer, only that its context window does. Retrieval statistics measure corpus-to-question fit directly, and cost nothing extra.
+That shape was chosen after an additive version let a question with very low mean similarity clear the threshold on support and spread alone, which is the failure mode that matters: a question the corpus cannot answer getting waved through.
 
-**Known flaw in the current formula.** It is additive, so support and spread can together contribute up to 0.40. With the threshold at 0.45, a question with very low mean similarity can still clear the gate on those two components alone. A multiplicative form, or a hard floor on mean similarity, would fix this.
+Below `confidence.answer_threshold` the system returns the closest passages and an explanation instead of an answer.
+
+Retrieval signals rather than asking the LLM to self-report, because a model cannot know that the corpus lacks an answer, only that its context window does. Retrieval statistics measure corpus-to-question fit directly and cost nothing extra.
 
 ## Evaluation
 
-A gold dataset lives at `data/evaluation/questions.csv` with the schema:
+Two harnesses, because the two paths fail differently.
 
-```
-question, expected_answer, relevant_documents, relevant_pages, ground_truth_passage
-```
+**Retrieval** ([`src/evaluation/evaluator.py`](src/evaluation/evaluator.py)). Recall@K, Precision@K, Hit@K, MRR, nDCG@K against `data/evaluation/questions.csv`. Relevance is anchored at **document and page** level rather than chunk ID, because chunk IDs renumber whenever chunk size changes, which would invalidate the entire gold set every time a chunking parameter is tuned.
 
-Relevance is anchored at **document and page** level rather than chunk ID. Chunk IDs renumber whenever chunk size changes, which would invalidate the entire gold set every time a chunking parameter is tuned. Anchoring to document and page keeps labels durable across re-indexing experiments.
-
-Implemented and unit-tested: Recall@K, Precision@K, Hit@K, MRR, nDCG@K.
+**Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). Validation pass rate, execution accuracy, non-empty rate, correct refusals on deliberately unanswerable questions, false refusals, and median/p95 latency, bucketed by question difficulty. Caching is bypassed so latency stays meaningful.
 
 ```python
-from src.utils.pipeline import RAGService
-from src.evaluation.evaluator import evaluate_retrieval
+from src.evaluation.sql_metrics import evaluate_file
 
-svc = RAGService()
-print(evaluate_retrieval(svc.retriever, "data/evaluation/questions.csv", k=5)["aggregate"])
+summary, by_bucket, detail = evaluate_file()
 ```
 
-> **The shipped `questions.csv` is a five-row schema template, not a benchmark.** It references sample documents that are not committed to this repo. To run a meaningful evaluation, index your own corpus and expand the file to 40-100 labelled questions. Results will be published here once run against a real corpus.
+> **Neither gold set is a benchmark yet.** `questions.csv` is a five-row schema template referencing documents not committed here. `ocean_questions.csv` is eight questions with `expected_value` unfilled, so the SQL harness currently measures whether a query runs, not whether its answer is right. Expanding these and publishing results is the top item on the roadmap, and the problem statement this project targets names ground-truth curation as its main limitation for exactly this reason.
+
+## Beyond retrieval
+
+Three analyses that run against the measurements table directly, included because "the model wrote some SQL" is not by itself evidence that the data supports a claim:
+
+- **Trend tests** ([`src/analytics/trend_test.py`](src/analytics/trend_test.py)) — regression and Mann-Kendall on regional surface series, reporting significance rather than a slope with no error bar.
+- **Clustering** ([`src/analytics/clustering.py`](src/analytics/clustering.py)) — k-means over profile features into data-driven water-mass groups, with silhouette scoring.
+- **Quantile forecasting** ([`src/analytics/forecast.py`](src/analytics/forecast.py)) — LightGBM quantile regression on monthly regional means, so the output is an interval.
+
+There is also a paired A/B harness ([`src/evaluation/ab_test.py`](src/evaluation/ab_test.py)) with a sample-size calculation, for comparing two pipeline configurations without reading noise as improvement.
 
 ---
 
 ## Design decisions
 
-| Decision                              | Rationale                                                                                                  |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Recursive splitting over fixed-length | Preserves paragraph and sentence boundaries; fixed slicing cuts mid-word and degrades embedding quality       |
-| Chunking isolated per page            | A chunk straddling two pages makes its citation ambiguous. Per-page chunking keeps "page 42" honest.          |
-| FAISS `IndexFlatIP` over HNSW         | Exact search. Approximation error would contaminate the retrieval metrics used to tune chunking and embedding |
-| Retrieval-based confidence            | LLMs are structurally uncalibrated about corpus coverage; retrieval signals are free and measure fit directly |
-| Temperature 0                         | The task is faithful extraction, not creative writing. Also makes evaluation runs comparable.                 |
-| Doc/page evaluation anchors           | Chunking parameters can be tuned without destroying the ground truth set                                      |
-| Provider abstraction (`BaseLLM`)      | OpenAI, Gemini and Ollama differ in response shape; one interface keeps that out of the pipeline              |
-| Guard 1 before the LLM call           | Refusing unanswerable questions at the retrieval stage saves both latency and API cost                        |
+| Decision                                 | Rationale                                                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Router with rules before the model        | Most questions are unambiguous. Paying for a model call on those is latency and cost for nothing               |
+| Read-only role for generated SQL          | A validator bug becomes a failed query rather than a data-loss incident                                        |
+| Column check against `information_schema` | Read from the live database, not the markdown catalog, so it cannot drift away from the real tables            |
+| SQL cache keyed on prompt version         | Re-running a demo should be fast, but a changed prompt must invalidate everything cached under the old one     |
+| Chunking isolated per page                | A chunk straddling two pages makes its citation ambiguous. Per-page chunking keeps "page 42" honest            |
+| Multiplicative confidence                 | Secondary signals should modulate the primary one, never rescue it                                             |
+| Retrieval-based confidence                | LLMs are structurally uncalibrated about corpus coverage; retrieval signals measure fit directly and are free  |
+| Reranker preserves cosine scores          | The cross-encoder decides ordering only, so confidence still reads a comparable scale                          |
+| Temperature 0                             | The task is faithful extraction, not creative writing. Also makes evaluation runs comparable                   |
+| Doc/page evaluation anchors               | Chunking parameters can be tuned without destroying the ground truth set                                       |
+| One service facade                        | Streamlit and FastAPI share `RAGService`, so behaviour is defined once                                         |
 
 ## Why RAG rather than fine-tuning
 
-RAG keeps knowledge external and updatable: re-index instead of re-training. It makes answers attributable, so a reader can check the source. And it avoids baking sensitive internal documents into model weights. Fine-tuning changes style and format, not the facts a system can cite.
+RAG keeps knowledge external and updatable: re-index instead of re-train. It makes answers attributable, so a reader can check the source. And it avoids baking sensitive documents into model weights. Fine-tuning changes style and format, not the facts a system can cite.
+
+For the ocean data the argument is stronger still. The answer to "average surface temperature in the Arabian Sea in 2021" is a number in a table that changes as floats report. No amount of training bakes that in correctly; a query reads it.
 
 ## Limitations
 
-- No models are trained or fine-tuned here; the embedding model and LLM are both used off the shelf.
-- Extraction quality depends on the source PDF. Scanned or image-only PDFs need OCR, which is not yet wired in.
-- Confidence is a heuristic over retrieval signals, not a calibrated probability. Tune the threshold against your own gold set.
-- The confidence formula is additive; see the flaw noted above.
-- `IndexFlatIP` is exact but linear in corpus size. Very large corpora need an ANN index.
-- Stateless: no conversational memory between questions.
-- No individual document deletion; removing a document requires an index rebuild.
-- Enabling the cross-encoder reranker reorders results without updating the confidence inputs, so confidence scores become unreliable when it is on. It is disabled by default for this reason.
+**Data.** Ingestion reads ERDDAP CSV exports, not NetCDF, which is the native ARGO distribution format. Only core parameters are stored (pressure, temperature, salinity); BGC parameters such as oxygen, chlorophyll and nitrate are not modelled. `qc_flag` is written as `1` for every row by the loader, so the QC conventions in the prompt and schema catalog are structural, not yet enforced against real flags. Region is assigned by three latitude/longitude inequalities in `scripts/load_argo.py`, which is coarse for a field that nearly every query groups by.
+
+**Architecture.** The document and data paths are routed between, not combined. The vector store holds uploaded documents only; float and profile metadata are not summarised and embedded, so there is no semantic layer feeding SQL generation. A question needing both sources gets one.
+
+**Retrieval and generation.** No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. Stateless: no conversational memory. No individual document deletion.
+
+**Charts.** Line and bar only, chosen from result shape. No trajectory map and no depth-profile plot, which are the two views this domain actually expects.
+
+**Evaluation.** No published numbers yet. See the note above.
 
 ## Roadmap
 
-- [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance, context precision and recall)
-- [ ] Published retrieval evaluation results against a real corpus
-- [ ] Hybrid search (BM25 + dense) and reranker enabled by default with corrected confidence handling
-- [ ] Multiplicative confidence formula with a mean-similarity floor
-- [ ] Remaining docs: `architecture.md`, `file_explanations.md`, `evaluation_report.md`, `monitoring.md`
-- [ ] Commit a `.env.example` and sample corpus so the repo is runnable on clone
-- [ ] FastAPI service layer, Dockerfile, GitHub Actions CI
+- [ ] NetCDF ingestion with `xarray`, carrying real QC flags through
+- [ ] BGC-ARGO parameters in the schema and catalog
+- [ ] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
+- [ ] Expand both gold sets, fill in expected values, publish the numbers
+- [ ] Trajectory map and depth-profile plots
+- [ ] Proper region assignment instead of lat/lon inequalities
+- [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)
+- [ ] Hybrid search (BM25 + dense)
+- [ ] GitHub Actions CI
 - [ ] Session-based conversation memory and chat export
+- [ ] Multilingual query support
 - [ ] OCR path for scanned PDFs
