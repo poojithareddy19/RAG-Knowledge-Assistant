@@ -302,7 +302,9 @@ Accuracy falls as query complexity rises, and the fall is steep. Single-table ag
 
 Validation pass rate is 1.000 while accuracy is 0.739. Every generated query was well formed, safe and ran, and a quarter still answered the wrong question. That gap is the entire argument for measuring results instead of liveness.
 
-**The one refusal that failed is the most serious result here.** Asked for the seafloor depth beneath each float, the model wrote a confident query against a schema that has no bathymetry. Five of six unanswerable questions were refused, including pH and dissolved oxygen before BGC existed, but a single fabricated query matters more than a point of accuracy in a system whose premise is declining rather than guessing.
+**The one refusal that failed is the most serious result here.** Asked for the seafloor depth beneath each float, the model answered `MAX(pressure_dbar) AS seafloor_depth`: the deepest a float descended, renamed to the thing that was asked for. A float profiles to around 2000 decibars over a seabed often three times deeper, so the query is not merely wrong, it looks entirely reasonable. Five of six unanswerable questions were refused, but a single fabricated query matters more than a point of accuracy in a system whose premise is declining rather than guessing.
+
+Three prompt fixes were tried and measured. Telling the model what the schema does not contain, and instructing it to refuse a quantity with no column, both stop the fabrication and both make it refuse legitimate questions instead: the deepest recorded pressure, the average pH, the average dissolved oxygen. Trading three false refusals for one caught fabrication is a worse system, and `false_refusal_rate` is otherwise a clean 0.000. What shipped is the version that keeps every real question working: the catalog now says plainly that `pressure_dbar` is how deep the float went and not where the seabed is, and the instructions forbid aliasing a column to a name that means something else. That is not enough to stop it. **This one needs a more capable model rather than better wording**, which is the same conclusion the window-function bucket reaches.
 
 A previous run of the 47-question set scored 0.707. The two are not comparable: the gold set changed, two unwinnable questions were replaced and a `bgc` bucket was added.
 
@@ -372,7 +374,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 - [ ] Answer a single question from documents and data together
 - [x] Expand the SQL gold set to 47 questions with reference queries, publish the numbers
 - [ ] Repeat runs so a difference can be told from noise
-- [ ] Close the last refusal gap: a bathymetry question still gets a fabricated query
+- [ ] Close the last refusal gap: a bathymetry question still gets a fabricated query, and prompt wording alone trades it for false refusals
 - [ ] Few-shot window-function examples, or a stronger model, for the bucket scoring 0.167
 - [ ] A document retrieval gold set that is not a five-row template
 - [ ] Trajectory map and depth-profile plots

@@ -34,7 +34,8 @@ One row per depth level within a profile.
 
 - `measurement_id` (bigint, PK)
 - `profile_id` (bigint, FK -> profiles.profile_id)
-- `pressure_dbar` (double) - approximately depth in metres
+- `pressure_dbar` (double) - how deep the float descended, approximately
+  metres. Not the depth of the seabed, which this database does not record
 - `temperature_c` (double) - degrees Celsius
 - `salinity_psu` (double) - practical salinity units
 - `qc_flag` (smallint) - overall quality of the row: the worst flag among the

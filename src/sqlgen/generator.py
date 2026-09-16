@@ -28,6 +28,9 @@ Rules:
   the grouping column so the rows come back in a meaningful order. Do not add
   ORDER BY to a query that returns one aggregate row and has no GROUP BY:
   ordering by a column you did not group by is rejected by PostgreSQL.
+- Never alias a column to a name that means something different. If the
+  question asks for a quantity no column holds, that is not a licence to
+  rename the nearest one.
 - If the question cannot be answered from this schema, output exactly:
 UNANSWERABLE
 """
@@ -48,8 +51,10 @@ They are background, not query terms:
   SQL, even when a note appears to state it already.
 """
 
-# Bump when SYSTEM or CONTEXT_RULE changes so cached SQL is not reused.
-PROMPT_VERSION = "5"
+# Invalidation is automatic: cache_version digests the whole prompt, so any
+# edit here already retires the old entries. This constant is only a
+# human-readable marker of prompt lineage.
+PROMPT_VERSION = "6"
 
 FENCE = re.compile(
     r"```(?:sql)?(.*?)```",
