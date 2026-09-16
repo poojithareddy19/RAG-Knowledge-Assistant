@@ -31,15 +31,23 @@ UNANSWERABLE
 """
 
 CONTEXT_RULE = """The notes below describe what this database actually holds:
-which floats exist, where they worked and when. Use them to resolve names,
-regions and time ranges the question mentions.
+which floats exist, where they worked and when. Use them only to work out what
+the question refers to, such as which float id or which region name.
 
-They are summaries, not results. Never copy a number out of them into your
-query as if it were an answer; compute every number with SQL.
+They are background, not query terms:
+
+- Do not turn a value from a note into a WHERE condition unless the question
+  itself asks for it. A note saying a float is an APEX platform on project
+  INCOIS does not mean the question is about APEX platforms or that project.
+  Those notes describe every float in the database, not a filter.
+- Do not narrow a query to the dates or ranges a note happens to mention. If
+  the question names no period, do not bound one.
+- Never copy a number out of a note as an answer. Compute every number with
+  SQL, even when a note appears to state it already.
 """
 
 # Bump when SYSTEM or CONTEXT_RULE changes so cached SQL is not reused.
-PROMPT_VERSION = "3"
+PROMPT_VERSION = "4"
 
 FENCE = re.compile(
     r"```(?:sql)?(.*?)```",

@@ -112,7 +112,26 @@ def test_prompt_includes_context_and_the_rule_against_quoting_it():
 
     assert "WHAT IS IN THE DATABASE" in prompt
     assert "1901393" in prompt
-    assert "compute every number with SQL" in prompt
+    assert "Compute every number with SQL" in " ".join(prompt.split())
+
+
+def test_prompt_forbids_turning_context_into_filters():
+    # The model once answered "how many measurements in the Southern Indian
+    # Ocean" with project = 'INCOIS' AND platform = 'APEX' bolted on, because
+    # those words appear in every retrieved summary. Describing the database
+    # is not the same as describing the question.
+    prompt = build_prompt("how many measurements?", context="- A note.")
+
+    assert "WHERE condition" in prompt
+    assert "does not mean the question is about" in prompt
+
+
+def test_prompt_forbids_inventing_a_date_range_from_context():
+    prompt = build_prompt("profiles per year", context="- A note.")
+
+    assert "If the question names no period, do not bound one." in " ".join(
+        prompt.split()
+    )
 
 
 def test_question_lands_after_the_context():
