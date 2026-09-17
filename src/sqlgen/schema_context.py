@@ -1,7 +1,38 @@
+from functools import lru_cache
 from pathlib import Path
 
 CATALOG = Path("db/schema_catalog.md")
 QUERY_DIR = Path("db/queries")
+
+
+@lru_cache(maxsize=1)
+def load_column_catalog():
+    """Return ``{table: frozenset(columns)}`` read from the live database.
+
+    Used by the validator to reject columns the model invented. Read from
+    information_schema rather than the markdown catalog so it cannot drift
+    away from the real tables.
+    """
+    from src.utils.db import fetch_all
+
+    _, rows = fetch_all(
+        """
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        """,
+        readonly=True,
+    )
+
+    catalog = {}
+
+    for table, column in rows:
+        catalog.setdefault(table, set()).add(column)
+
+    return {
+        table: frozenset(columns)
+        for table, columns in catalog.items()
+    }
 
 
 def load_catalog():

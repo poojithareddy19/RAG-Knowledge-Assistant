@@ -152,6 +152,7 @@ def log_result(
         "sql_cached": result.get("sql_cached"),
         "row_count": result.get("row_count"),
         "elapsed_ms": result.get("elapsed_ms"),
+        "db_elapsed_ms": result.get("db_elapsed_ms"),
         "latency_ms": result.get("latency_ms", {}),
         "retrieved": result.get("retrieved", []),
         "provider": result.get("provider", ""),
