@@ -331,3 +331,95 @@ def test_unsensed_bgc_parameters_are_null(bgc_file):
 
     assert surface.values["nitrate_umol_kg"] is None
     assert surface.values["ph_total"] is None
+
+
+@pytest.fixture
+def empty_adjusted_file(tmp_path):
+    """A delayed-mode profile whose adjusted variables are entirely fill.
+
+    Real GDAC files do this: DATA_MODE says D, the *_ADJUSTED variables are
+    declared, and every one of their values is fill, with the measurements
+    left in the raw variables.
+    """
+    path = tmp_path / "D1900162_001.nc"
+
+    dataset = nc.Dataset(path, "w", format="NETCDF4")
+
+    dataset.createDimension("N_PROF", 1)
+    dataset.createDimension("N_LEVELS", 3)
+    dataset.createDimension("STRING8", 8)
+    dataset.createDimension("STRING32", 32)
+    dataset.createDimension("STRING64", 64)
+
+    def text(name, values, width, dim):
+        var = dataset.createVariable(name, "S1", ("N_PROF", dim))
+        var[:] = _chars(values, width)
+
+    def flag(name, values):
+        var = dataset.createVariable(name, "S1", ("N_PROF",))
+        var[:] = np.array(values, dtype="S1")
+
+    def numbers(name, values, dtype="f8"):
+        var = dataset.createVariable(name, dtype, ("N_PROF",))
+        var[:] = np.array(values)
+
+    def grid(name, rows):
+        var = dataset.createVariable(
+            name,
+            "f4",
+            ("N_PROF", "N_LEVELS"),
+            fill_value=FILL,
+        )
+        var[:] = np.array(rows, dtype="f4")
+
+    def grid_qc(name, rows):
+        var = dataset.createVariable(name, "S1", ("N_PROF", "N_LEVELS"))
+        var[:] = np.array(rows, dtype="S1")
+
+    text("PLATFORM_NUMBER", ["1900162"], 8, "STRING8")
+    text("PLATFORM_TYPE", ["APEX"], 32, "STRING32")
+    text("PROJECT_NAME", ["ARGO INDIA"], 64, "STRING64")
+
+    flag("DATA_MODE", ["D"])
+    flag("POSITION_QC", ["1"])
+    flag("JULD_QC", ["1"])
+
+    numbers("CYCLE_NUMBER", [1], dtype="i4")
+    numbers("JULD", [JULD_2020])
+    numbers("LATITUDE", [9.17])
+    numbers("LONGITUDE", [53.89])
+
+    grid("PRES", [[4.3, 9.4, 19.0]])
+    grid("TEMP", [[27.6, 27.5, 27.4]])
+    grid("PSAL", [[35.5, 35.5, 35.4]])
+
+    grid_qc("PRES_QC", [["1"] * 3])
+    grid_qc("TEMP_QC", [["1"] * 3])
+    grid_qc("PSAL_QC", [["1"] * 3])
+
+    grid("PRES_ADJUSTED", [[FILL] * 3])
+    grid("TEMP_ADJUSTED", [[FILL] * 3])
+    grid("PSAL_ADJUSTED", [[FILL] * 3])
+
+    grid_qc("PRES_ADJUSTED_QC", [[" "] * 3])
+    grid_qc("TEMP_ADJUSTED_QC", [[" "] * 3])
+    grid_qc("PSAL_ADJUSTED_QC", [[" "] * 3])
+
+    dataset.close()
+
+    return path
+
+
+def test_empty_adjusted_falls_back_to_the_raw_values(empty_adjusted_file):
+    profiles = read_file(empty_adjusted_file)
+
+    assert len(profiles) == 1
+
+    levels = profiles[0].levels
+
+    assert [level.pressure_dbar for level in levels] == pytest.approx(
+        [4.3, 9.4, 19.0],
+        abs=1e-3,
+    )
+    assert levels[0].values["temperature_c"] == pytest.approx(27.6, abs=1e-3)
+    assert levels[0].values["salinity_psu"] == pytest.approx(35.5, abs=1e-3)

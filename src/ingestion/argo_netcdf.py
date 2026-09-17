@@ -226,7 +226,7 @@ def _levels(dataset, index, mode) -> list[ArgoLevel]:
     flag_columns = {}
 
     for parameter in PARAMETERS:
-        name, qc_name = _variant(dataset, parameter.argo, mode)
+        name, qc_name = _variant(dataset, parameter.argo, mode, index)
         columns[parameter.column] = _column(dataset, name, index)
         flag_columns[parameter.qc_column] = _qc_column(dataset, qc_name, index)
 
@@ -274,12 +274,29 @@ def _levels(dataset, index, mode) -> list[ArgoLevel]:
     return out
 
 
-def _variant(dataset, parameter, mode) -> tuple[str, str]:
-    """The value/QC variable pair this profile's data mode says to read."""
-    if mode in ("D", "A") and f"{parameter}_ADJUSTED" in dataset:
-        return f"{parameter}_ADJUSTED", f"{parameter}_ADJUSTED_QC"
+def _variant(dataset, parameter, mode, index) -> tuple[str, str]:
+    """The value/QC variable pair this profile's data mode says to read.
+
+    Delayed mode promises adjusted values but does not always deliver them.
+    A file can declare ``DATA_MODE`` of ``D`` and carry ``PRES_ADJUSTED``,
+    ``TEMP_ADJUSTED`` and ``PSAL_ADJUSTED`` that are entirely fill, with the
+    real measurements left in the raw variables. Taking the adjusted pair on
+    the strength of its existence alone then yields a profile with no depth
+    and no value at every level, and the whole profile is dropped without a
+    word. The presence test is per profile because one file can hold both.
+    """
+    if mode in ("D", "A"):
+        adjusted = f"{parameter}_ADJUSTED"
+
+        if adjusted in dataset and _has_values(dataset, adjusted, index):
+            return adjusted, f"{adjusted}_QC"
 
     return parameter, f"{parameter}_QC"
+
+
+def _has_values(dataset, name, index) -> bool:
+    """Does this profile's row of ``name`` hold a single usable number?"""
+    return bool(np.any(~pd.isna(_column(dataset, name, index))))
 
 
 def _overall_qc(pairs) -> int | None:
