@@ -26,6 +26,12 @@ class AskRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=128)
 
 
+class ExportRequest(AskRequest):
+    """Request body for /export: an /ask question plus the file format."""
+
+    format: Literal["csv", "netcdf"] = "csv"
+
+
 class AskResponse(BaseModel):
     """Response body returned by the /ask endpoint."""
 

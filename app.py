@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from src.utils.config import get_config
+from src.utils.export import to_csv_bytes, to_netcdf_bytes
 from src.utils.pipeline import RAGService
 
 
@@ -376,6 +377,44 @@ def _page_settings(cfg):
     )
 
 
+def _download_buttons(svc, result, question):
+    """Offer the result set as CSV and as NetCDF.
+
+    Both, because they answer different questions. CSV opens anywhere and
+    carries no units; the NetCDF carries the units, the column descriptions and
+    the SQL that produced it, so the download stays reproducible after it
+    leaves this page.
+    """
+    # The table above shows the first hundred rows; the file is all of them.
+    full = svc.complete_result(result)
+
+    csv_column, netcdf_column = st.columns(2)
+
+    with csv_column:
+        st.download_button(
+            "Download CSV",
+            data=to_csv_bytes(full),
+            file_name="result.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    with netcdf_column:
+        try:
+            blob = to_netcdf_bytes(full, title=question)
+        except Exception as exc:
+            st.caption(f"NetCDF export unavailable: {exc}")
+            return
+
+        st.download_button(
+            "Download NetCDF",
+            data=blob,
+            file_name="result.nc",
+            mime="application/x-netcdf",
+            use_container_width=True,
+        )
+
+
 def _remember(cfg, history, question, answer):
     """Append this exchange, keeping only the turns the rewriter may use.
 
@@ -494,6 +533,8 @@ def _page_ocean_data(cfg):
             ),
             use_container_width=True,
         )
+
+        _download_buttons(svc, result, question)
 
     if result.get("context_used"):
         with st.expander(

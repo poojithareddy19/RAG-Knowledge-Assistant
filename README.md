@@ -238,7 +238,9 @@ Or the HTTP service:
 uvicorn src.api.main:app --reload
 ```
 
-`POST /ask` takes `{"question": "...", "route_override": null}` and returns the answer with citations or with the generated SQL, rows and timings. `GET /health` reports indexed documents, measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
+`POST /ask` takes `{"question": "...", "route_override": null, "session_id": null}` and returns the answer with citations or with the generated SQL, rows and timings. Passing the same `session_id` on a later request is what makes a follow up like "and in 2022?" resolvable. `GET /health` reports indexed documents, measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
+
+`POST /export` takes the same body plus `"format": "csv" | "netcdf"` and streams the result set as a file. It returns every row rather than the hundred `/ask` includes for display, and the NetCDF carries units, column descriptions and the generating SQL in its attributes, so a download stays readable and reproducible after it leaves the API.
 
 Both UIs show the same two things the answer depends on: for documents, the retrieved chunks with similarity scores and the exact prompt sent to the model; for data, the SQL. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
 

@@ -415,6 +415,42 @@ class RAGService:
             ),
         }
 
+    def complete_result(self, result: dict) -> dict:
+        """The same result with every row, for callers writing a file.
+
+        ``answer_from_data`` caps ``rows`` at 100, which is right for a JSON
+        body and for a table on a page and wrong for an export: a file offered
+        as the result of a query has to be the result of that query, and one
+        holding the first hundred of five hundred rows is quietly wrong in a
+        way nobody downloading it can see.
+
+        The query is re-run rather than cached, and it goes back through the
+        validator on the way, so the export path crosses exactly the same
+        safety boundary as the original. A failure returns the truncated
+        result, because a short file beats an error page.
+        """
+        sql = result.get("generated_sql")
+
+        if not sql or not result.get("columns"):
+            return result
+
+        try:
+            out = run_query(
+                validate(
+                    sql,
+                    allowed_tables=self.cfg.sql.allowed_tables,
+                )
+            )
+        except Exception:
+            return result
+
+        return {
+            **result,
+            "columns": out["columns"],
+            "rows": out["rows"],
+            "row_count": out["row_count"],
+        }
+
     def _ocean_chart(self, result, question):
         """A Plotly spec for this result when it is a known ocean shape.
 

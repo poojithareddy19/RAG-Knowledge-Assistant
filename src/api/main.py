@@ -13,10 +13,12 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
-from src.api.schemas import AskRequest, AskResponse, HealthResponse
+from src.api.schemas import AskRequest, AskResponse, ExportRequest, HealthResponse
 from src.utils.config import get_config
 from src.utils.db import fetch_all
+from src.utils.export import to_csv_bytes, to_netcdf_bytes
 from src.utils.pipeline import RAGService
 
 load_dotenv()
@@ -115,6 +117,47 @@ def health() -> HealthResponse:
         documents_indexed=docs[0][0],
         measurements=meas[0][0],
         llm_reachable=llm_ok,
+    )
+
+
+@app.post("/export")
+def export(req: ExportRequest) -> StreamingResponse:
+    """Answer a question and return the rows as a file rather than as JSON.
+
+    The same body as /ask plus a format. Streamed with a filename, so a browser
+    or curl -O saves something usable instead of printing bytes to a terminal.
+    """
+    svc = service()
+
+    result = svc.answer(
+        req.question,
+        history=_history.get(req.session_id) if req.session_id else None,
+    )
+
+    if result.get("refused") or not result.get("columns"):
+        raise HTTPException(
+            status_code=422,
+            detail=result.get("answer", "the question produced no result set"),
+        )
+
+    # Every row, not the hundred /ask returns for display.
+    result = svc.complete_result(result)
+
+    if req.format == "csv":
+        blob = to_csv_bytes(result)
+        media = "text/csv"
+        name = "result.csv"
+    else:
+        blob = to_netcdf_bytes(result, title=req.question)
+        media = "application/x-netcdf"
+        name = "result.nc"
+
+    return StreamingResponse(
+        iter([blob]),
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+        },
     )
 
 
