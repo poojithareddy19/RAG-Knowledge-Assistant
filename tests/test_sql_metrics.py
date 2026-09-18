@@ -10,7 +10,12 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from src.evaluation.sql_metrics import results_match
+from src.evaluation.sql_metrics import (
+    mean_sd,
+    results_match,
+    summarise_buckets,
+    summarise_runs,
+)
 
 GOLD_SET = "data/evaluation/ocean_questions.csv"
 
@@ -104,3 +109,48 @@ def test_the_gold_set_is_large_enough_to_mean_something(gold):
 
 def test_questions_are_unique(gold):
     assert gold["question"].duplicated().sum() == 0
+
+
+def test_mean_sd_reports_no_spread_for_a_single_run():
+    assert mean_sd([0.7]) == (0.7, None)
+
+
+def test_mean_sd_ignores_missing_metrics():
+    # correct_refusal_rate is None when a run has no unanswerable questions.
+    assert mean_sd([0.6, None, 0.8]) == (0.7, 0.141)
+
+
+def test_mean_sd_of_nothing_is_nothing():
+    assert mean_sd([None, None]) == (None, None)
+
+
+def test_summarise_runs_pairs_each_metric_with_its_spread():
+    summaries = [
+        {"run": 1, "execution_accuracy": 0.60, "median_latency_ms": 900.0},
+        {"run": 2, "execution_accuracy": 0.70, "median_latency_ms": 910.0},
+    ]
+
+    out = summarise_runs(summaries)
+
+    assert out["execution_accuracy"] == (0.65, 0.071)
+    assert "run" not in out
+
+
+def test_summarise_buckets_averages_each_bucket_across_runs():
+    buckets = [
+        {"easy": {"matched": 1.0}, "window": {"matched": 0.2}},
+        {"easy": {"matched": 0.8}, "window": {"matched": 0.4}},
+    ]
+
+    out = summarise_buckets(buckets)
+
+    assert out["easy"]["matched"] == (0.9, 0.141)
+    assert out["window"]["matched"] == (0.3, 0.141)
+
+
+def test_summarise_buckets_tolerates_a_bucket_missing_from_one_run():
+    buckets = [{"easy": {"matched": 1.0}}, {"easy": {"matched": 0.5}, "bgc": {"matched": 0.2}}]
+
+    out = summarise_buckets(buckets)
+
+    assert out["bgc"]["matched"] == (0.2, None)

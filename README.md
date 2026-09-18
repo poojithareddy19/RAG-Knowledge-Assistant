@@ -4,7 +4,7 @@ Natural-language questions answered from two kinds of source, with the evidence 
 
 Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and a 52-question text-to-SQL benchmark scoring [0.739 execution accuracy](#results). The largest remaining gaps are that a single question is answered from documents or data but never both, and that no BGC-ARGO float has been loaded yet, so those columns are all NULL. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and a 52-question text-to-SQL benchmark scoring [0.652 execution accuracy](#results) against real Argo GDAC profiles. The largest remaining gap is that a single question is answered from documents or data but never both. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -127,8 +127,8 @@ RAG_Assistant/
 │                    004_argo_qc.sql · 005_semantic_layer.sql
 │                    006_bgc_parameters.sql
 │                    schema_catalog.md · queries/         # 12 reference queries
-├── scripts/         load_argo_netcdf.py · load_argo.py
-│                    build_semantic_index.py
+├── scripts/         fetch_argo_index.py · load_argo_netcdf.py
+│                    load_argo.py · build_semantic_index.py
 │                    make_sample_data.py · run_ab_test.py
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
@@ -174,15 +174,26 @@ ollama pull llama3.1
 
 ### Load ocean data
 
+Real profiles come from the Argo GDAC. [`scripts/fetch_argo_index.py`](scripts/fetch_argo_index.py) reads the global profile index, keeps the rows that are both tagged Indian Ocean and inside the box, and downloads them:
+
+```bash
+python scripts/fetch_argo_index.py --floats 40 --limit 800 --download
+python scripts/fetch_argo_index.py --bgc --floats 10 --limit 200 --download
+```
+
+Both limits matter. `--floats` decides how many floats the sample covers and `--limit` how many of their cycles are taken. A file limit on its own buys one cycle each from hundreds of floats, which is a map with no tracks on it and a profile count of 1 for every float. Floats are visited region by region rather than in id order, because WMO ids are handed out in blocks per deployment programme, so id order is geography order: the first forty ids inside the box are forty floats south of the equator and not one in the Arabian Sea. `--include 1900083,1900162` takes named floats in full instead of sampling them, which is how the set gets a float with a unique profile count. The 58 MB index is cached under `data/raw/argo_index/` after the first run; `--refresh` re-downloads it.
+
+The second command is not optional. A core-only load leaves every biogeochemical column NULL, and a NULL column reads as "no oxygen here" rather than as "this float does not carry that sensor".
+
 ARGO is distributed as NetCDF, which is the loader to prefer. It takes files or directories and searches directories recursively:
 
 ```bash
-python scripts/load_argo_netcdf.py path/to/dac/incois/
+python scripts/load_argo_netcdf.py data/raw/argo/
 ```
 
 Re-running is safe: profiles already present are left alone rather than duplicated, so an interrupted load can simply be repeated.
 
-Two ARGO conventions are handled in [`src/ingestion/argo_netcdf.py`](src/ingestion/argo_netcdf.py) rather than left to the caller. Profiles in delayed or adjusted mode are read from their `*_ADJUSTED` variables, because in those modes the raw variables are kept only for provenance and reading them anyway is the most common way to get ARGO wrong. And each parameter's QC flag is stored separately, because a level can have good temperature and bad salinity.
+Three ARGO conventions are handled in [`src/ingestion/argo_netcdf.py`](src/ingestion/argo_netcdf.py) rather than left to the caller. Profiles in delayed or adjusted mode are read from their `*_ADJUSTED` variables, because in those modes the raw variables are kept only for provenance and reading them anyway is the most common way to get ARGO wrong. Each parameter's QC flag is stored separately, because a level can have good temperature and bad salinity. And a delayed-mode profile whose `*_ADJUSTED` variables are declared but entirely fill falls back to the raw values, because taking the adjusted pair on the strength of its existence alone yields no depth and no value at every level, and the whole profile is then dropped without a word. One float in the sample lost all 54 of its profiles that way.
 
 There is also an ERDDAP tabledap CSV loader, kept because a CSV export is often the quickest way to get a region loaded:
 
@@ -265,55 +276,77 @@ Two harnesses, because the two paths fail differently.
 
 **Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). The metric is **execution accuracy**: run the generated query and a hand-written reference query and compare their result sets. Whether a query parses says nothing about whether it answered the question.
 
-Comparing results rather than SQL text is deliberate, because there are many correct ways to write the same query. In one run the model answered "number of profiles per region" with a join the reference did not have, and was right.
+Comparing results rather than SQL text is deliberate, because there are many correct ways to write the same query. A generated query that reaches the same rows through a join the reference did not need is still a right answer, and string comparison would mark it wrong.
+
+```bash
+python -m src.evaluation.sql_metrics --runs 3
+```
+
+`--runs N` scores the whole set N times and reports each metric as a mean with a standard deviation, because one run cannot separate a real change from sampling noise. The SQL cache is forced off whenever N is above 1: a cached repeat replays the first run's SQL, so the spread would describe the cache rather than the model.
 
 ```python
-from src.evaluation.sql_metrics import evaluate_file
+from src.evaluation.sql_metrics import evaluate_runs, summarise_buckets
 
-summary, by_bucket, detail = evaluate_file()
+summaries, buckets, detail = evaluate_runs(runs=3)
 ```
 
 ### Results
 
-52 questions, `llama3.1:8b` via Ollama, against 40 synthetic floats and 233,600 measurements. Single run.
+52 questions, `llama3.1:8b` via Ollama, against **real Argo GDAC profiles**: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean, spanning 2001-07-24 to 2025-10-05 across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading. Three runs, reported as mean and standard deviation.
 
 | Metric | Value |
 | ------------------------- | ----- |
-| **Execution accuracy**    | **0.739** |
-| Validation pass rate      | 1.000 |
-| Execution rate            | 0.957 |
-| Correct refusal rate      | 0.833 |
-| False refusal rate        | 0.000 |
-| Median latency            | 26.5 s |
-| p95 latency               | 47.3 s |
+| **Execution accuracy**    | **0.652 +/- 0.000** |
+| Validation pass rate      | 1.000 +/- 0.000 |
+| Execution rate            | 0.957 +/- 0.000 |
+| Correct refusal rate      | 0.833 +/- 0.000 |
+| False refusal rate        | 0.000 +/- 0.000 |
+| Median latency            | 34.8 s +/- 1.6 |
+| p95 latency               | 55.7 s +/- 1.4 |
 
 | Bucket | Questions | Execution accuracy |
 | ------------ | --- | ----- |
-| easy         | 8   | 1.000 |
-| filter       | 8   | 1.000 |
-| bgc          | 5   | 1.000 |
-| qc           | 5   | 0.800 |
-| join         | 8   | 0.625 |
-| groupby      | 6   | 0.500 |
-| window       | 6   | 0.167 |
+| easy         | 8   | 1.000 +/- 0.000 |
+| filter       | 8   | 1.000 +/- 0.000 |
+| join         | 8   | 0.625 +/- 0.000 |
+| qc           | 5   | 0.600 +/- 0.000 |
+| bgc          | 5   | 0.400 +/- 0.000 |
+| groupby      | 6   | 0.333 +/- 0.000 |
+| window       | 6   | 0.333 +/- 0.000 |
 | unanswerable | 6   | 5/6 refused |
 
-Accuracy falls as query complexity rises, and the fall is steep. Single-table aggregates and filters are perfect. **Window functions are 1 of 6, the same in three separate runs**, which is the most stable finding here: this model cannot reliably write `lag`, ranking or first/last-value SQL against this schema. That is a model-capability ceiling, not a prompt that needs another sentence.
+**Every standard deviation is zero, and that is a result rather than a formatting artefact.** Temperature is 0, and across three runs the model produced byte-identical SQL for all 52 questions. What proves the model was actually re-queried rather than served from cache is that median latency moved between runs: 33.0 s, 36.2 s, 35.2 s. For this model on this gold set a single run is as informative as three, which is worth knowing before anyone reads a two-point difference as an improvement. That will stop being true with a sampled model, and the harness keeps `--runs` for then.
 
-Validation pass rate is 1.000 while accuracy is 0.739. Every generated query was well formed, safe and ran, and a quarter still answered the wrong question. That gap is the entire argument for measuring results instead of liveness.
+Accuracy still falls as query complexity rises. Single-table aggregates and filters are perfect, joins are middling, and everything that needs a window function or a multi-level grouping is roughly one in three.
 
-**The one refusal that failed is the most serious result here.** Asked for the seafloor depth beneath each float, the model answered `MAX(pressure_dbar) AS seafloor_depth`: the deepest a float descended, renamed to the thing that was asked for. A float profiles to around 2000 decibars over a seabed often three times deeper, so the query is not merely wrong, it looks entirely reasonable. Five of six unanswerable questions were refused, but a single fabricated query matters more than a point of accuracy in a system whose premise is declining rather than guessing.
+Validation pass rate is 1.000 while accuracy is 0.652. Every generated query was well formed, safe and executable, and a third still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
 
-Three prompt fixes were tried and measured. Telling the model what the schema does not contain, and instructing it to refuse a quantity with no column, both stop the fabrication and both make it refuse legitimate questions instead: the deepest recorded pressure, the average pH, the average dissolved oxygen. Trading three false refusals for one caught fabrication is a worse system, and `false_refusal_rate` is otherwise a clean 0.000. What shipped is the version that keeps every real question working: the catalog now says plainly that `pressure_dbar` is how deep the float went and not where the seabed is, and the instructions forbid aliasing a column to a name that means something else. That is not enough to stop it. **This one needs a more capable model rather than better wording**, which is the same conclusion the window-function bucket reaches.
+**The one refusal that failed is still the most serious result here.** Asked for the seafloor depth beneath each float, the model answered `MAX(m.pressure_dbar) AS seafloor_depth`: the deepest a float descended, renamed to the thing that was asked for. A float profiles to around 2000 decibars over a seabed often three times deeper, so the query is not merely wrong, it looks entirely reasonable. Five of six unanswerable questions were refused, but a single fabricated query matters more than a point of accuracy in a system whose premise is declining rather than guessing.
 
-A previous run of the 47-question set scored 0.707. The two are not comparable: the gold set changed, two unwinnable questions were replaced and a `bgc` bucket was added.
+Three prompt fixes were tried and measured. Telling the model what the schema does not contain, and instructing it to refuse a quantity with no column, both stop the fabrication and both make it refuse legitimate questions instead: the deepest recorded pressure, the average pH, the average dissolved oxygen. Trading three false refusals for one caught fabrication is a worse system, and `false_refusal_rate` is otherwise a clean 0.000. What shipped is the version that keeps every real question working: the catalog now says plainly that `pressure_dbar` is how deep the float went and not where the seabed is, and the instructions forbid aliasing a column to a name that means something else. That is not enough to stop it. **This one needs a more capable model rather than better wording.**
+
+#### What changed when the data became real
+
+The same gold set scored 0.739 against 40 synthetic floats. The two figures are not comparable, because the data and six of the questions both changed, but the per-bucket movement says where the difference came from.
+
+| Bucket | Synthetic | Real | |
+| ------- | ----- | ----- | --- |
+| bgc     | 1.000 | 0.400 | the old score was measured on columns that were entirely NULL |
+| groupby | 0.500 | 0.333 | |
+| qc      | 0.800 | 0.600 | |
+| window  | 0.167 | 0.333 | |
+| join    | 0.625 | 0.625 | |
+
+Most of the headline drop is the `bgc` bucket, and it is a correction rather than a regression. With every biogeochemical column NULL, the reference query and the generated query agreed by both finding nothing, and five questions scored perfect without testing any arithmetic. Against floats that actually carry oxygen, chlorophyll and pH sensors, two of five are right.
+
+Six questions had to be repaired before the set could run at all, because they were written against data that no longer exists: two asked about years with no profiles in the real sample, one asked about synthetic float 2900007, one counted nitrate readings that no sampled float carries, and the two "which float has the most profiles" questions were restored now that real floats have genuinely different profile counts rather than 730 each.
 
 ### What these numbers do not tell you
 
-- **Single run per configuration.** Temperature is 0, but any prompt change reshuffles outputs, so individual question flips are weak evidence. Treat differences under about five points as noise until someone runs it three times.
-- **Execution accuracy has false positives.** "Number of profiles per year" once scored correct with a query that joined `measurements` and filtered `pressure_dbar < 10`. Every profile happens to have exactly one measurement above 10 decibars in this dataset, so a wrong query collapsed to the right number. A coincidence in the data can mark a wrong query right.
-- **Synthetic data flatters some questions and breaks others.** Every float has exactly 730 profiles, so any "which float has the most" question is a 40-way tie with no single right answer. Two such questions had to be replaced. Real ARGO data would not have this shape.
-- **The `bgc` bucket scores 1.000 on empty columns.** No BGC-ARGO float has been loaded, so every biogeochemical column is NULL and the reference and generated queries agree by both finding nothing. That result shows the model targets the right columns and stops refusing; it does not show the arithmetic is right.
+- **One model, one prompt, one schema.** The set has never been run against a second model, so nothing here separates what this model cannot do from what no model could do with this prompt.
+- **Execution accuracy has false positives.** A wrong query can collapse to the right number when the data happens to cooperate, and the comparison cannot tell that apart from understanding.
+- **The BGC sample is narrow.** Ten biogeochemical floats were loaded and none of them carries a NITRATE sensor, so that column is empty and the `bgc` bucket tests oxygen, chlorophyll, pH and backscatter only.
+- **Profile counts are shaped by the download, not by the ocean.** The sample takes a bounded number of cycles per float, so "which float reported most" is answerable but is a fact about what was fetched rather than about the fleet.
 - **The document retrieval gold set is still a template.** `questions.csv` is five rows referencing documents not committed here. Only the SQL side has real numbers.
 
 ## Beyond retrieval
@@ -354,7 +387,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 ## Limitations
 
-**Data.** The schema carries core CTD and five biogeochemical parameters, but the synthetic dataset has no BGC readings, so every BGC column is currently NULL and the `bgc` eval questions pass by both sides correctly finding nothing. Loading a real BGC-ARGO float is what would exercise them. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
+**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
 
 **Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
@@ -362,7 +395,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Charts.** Line and bar only, chosen from result shape. No trajectory map and no depth-profile plot, which are the two views this domain actually expects.
 
-**Evaluation.** Text-to-SQL scores 0.739 execution accuracy, and complex queries are much worse than that average suggests: window functions are 1 of 6. One unanswerable question in six still gets a fabricated query rather than a refusal. Every number comes from a single run against synthetic data. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.652 execution accuracy over three runs against real data, and complex queries are much worse than that average suggests: window functions and multi-level groupings are both 1 in 3. One unanswerable question in six still gets a fabricated query rather than a refusal. The set has only ever been run against one model, so nothing separates this model's ceiling from the prompt's. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 
