@@ -31,6 +31,10 @@ Rules:
 - Never alias a column to a name that means something different. If the
   question asks for a quantity no column holds, that is not a licence to
   rename the nearest one.
+- When the question asks where a float went, or asks for a map, a track or a
+  trajectory, select latitude and longitude along with obs_time. A position is
+  the answer to that question, and a query returning only a count or a date
+  cannot be drawn on a map.
 - If the question cannot be answered from this schema, output exactly:
 UNANSWERABLE
 """
@@ -54,7 +58,21 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "6"
+PROMPT_VERSION = "7"
+
+# One worked example rather than a rule alone, because the rule says what to
+# select and the example shows the shape: ordered by time, one row per cycle.
+TRACK_EXAMPLE = """=== EXAMPLE ===
+Question:\tShow the track of float 1900083
+SQL:
+SELECT float_id,
+       obs_time,
+       latitude,
+       longitude
+FROM profiles
+WHERE float_id = 1900083
+ORDER BY obs_time
+"""
 
 FENCE = re.compile(
     r"```(?:sql)?(.*?)```",
@@ -84,6 +102,9 @@ def build_prompt(
         SYSTEM,
         f"=== SCHEMA ===\n{build_context(include_examples)}",
     ]
+
+    if include_examples:
+        sections.append(TRACK_EXAMPLE)
 
     if context.strip():
         sections.append(

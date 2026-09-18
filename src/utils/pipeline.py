@@ -22,13 +22,15 @@ The service exposes two public query methods:
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from pathlib import Path
 
 import httpx
 
-from src.charts.builder import render
+from src.charts.builder import render, to_frame
+from src.charts.ocean import pick_ocean_chart, render_ocean
 from src.embeddings.embedding_model import get_embedding_model
 from src.generation.answer_generator import AnswerGenerator
 from src.ingestion.chunker import chunk_segments
@@ -356,12 +358,20 @@ class RAGService:
 
         png = None
         kind = None
+        spec = None
 
         if want_chart:
+            # The matplotlib render runs whatever the shape, because the API
+            # contract promises a PNG and an image client has to keep working.
             png, kind = render(
                 result,
                 title=question,
             )
+
+            spec, ocean_kind = self._ocean_chart(result, question)
+
+            if spec is not None:
+                kind = ocean_kind
 
         return {
             "answer": self._summarise_rows(result),
@@ -375,6 +385,7 @@ class RAGService:
             "db_elapsed_ms": result["elapsed_ms"],
             "chart_png": png,
             "chart_kind": kind,
+            "chart_spec": spec,
             # For documents, confidence measures retrieval quality.
             # For SQL, it indicates whether a validated query returned rows.
             "confidence": (
@@ -383,6 +394,35 @@ class RAGService:
                 else 0.0
             ),
         }
+
+    def _ocean_chart(self, result, question):
+        """A Plotly spec for this result when it is a known ocean shape.
+
+        Returns ``(None, None)`` for anything unrecognised, so the generic
+        matplotlib chart stays the answer for an ordinary aggregate. A failure
+        to build the figure is swallowed for the same reason: a chart that
+        cannot be drawn should cost the user a chart, not the answer.
+        """
+        try:
+            df = to_frame(result)
+
+            if df.empty:
+                return None, None
+
+            kind = pick_ocean_chart(df)
+
+            if kind is None:
+                return None, None
+
+            figure = render_ocean(df, kind, title=question)
+
+            # Through the JSON encoder rather than to_dict, because the figure
+            # holds numpy arrays and pandas timestamps that neither FastAPI nor
+            # the JSONL log can serialise.
+            return json.loads(figure.to_json()), kind
+
+        except Exception:
+            return None, None
 
     def _summaries(self, question: str) -> list[Summary]:
         """What the semantic layer knows about this question, or nothing.

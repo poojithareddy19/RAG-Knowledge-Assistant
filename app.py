@@ -439,7 +439,14 @@ def _page_ocean_data(cfg):
 
     st.success(result["answer"])
 
-    if result.get("chart_png"):
+    if result.get("chart_spec"):
+        # A domain plot: a track, a cast, a section or a T-S cloud. Interactive,
+        # because reading a position off a static map is guesswork.
+        st.plotly_chart(
+            result["chart_spec"],
+            use_container_width=True,
+        )
+    elif result.get("chart_png"):
         st.image(result["chart_png"])
     elif result.get("chart_kind") == "table":
         st.caption(

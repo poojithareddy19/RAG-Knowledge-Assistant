@@ -18,8 +18,13 @@ Reply with JSON only: {"route": "...", "reason": "..."}
 """
 
 
+# map, track and trajectory are here because in this domain they name a
+# picture, not a number. "Where did float 1900083 go" is answered by drawing
+# its path, and without these words it matches "float" in DATA_WORDS and comes
+# back as a table of coordinates.
 CHART_WORDS = re.compile(
-    r"\b(plot|chart|graph|visuali[sz]e|draw|trend line|show me a)\b",
+    r"\b(plot|chart|graph|visuali[sz]e|draw|trend line|show me a"
+    r"|map|track|trajector(?:y|ies)|where did)\b",
     re.I,
 )
 

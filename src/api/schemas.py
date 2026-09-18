@@ -41,6 +41,11 @@ class AskResponse(BaseModel):
     row_count: int | None = None
     elapsed_ms: float | None = None
     db_elapsed_ms: float | None = None
+    # A Plotly figure for the domain plots, present only when the result has
+    # a shape one of them fits. chart_kind names it either way, so a client
+    # that only renders images still knows what it was given.
+    chart_spec: dict | None = None
+    chart_kind: str | None = None
 
 
 class HealthResponse(BaseModel):

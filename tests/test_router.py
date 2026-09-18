@@ -24,3 +24,20 @@ def test_fallback_is_used_when_model_disabled():
     )
     assert route_name == "documents"
     assert how == "fallback"
+
+def test_a_track_question_routes_to_chart():
+    # "float" matches DATA_WORDS, so without the domain words this came back
+    # as a table of coordinates rather than a map.
+    assert rule_route("show the track of float 1900083") == "chart"
+
+
+def test_a_map_question_routes_to_chart():
+    assert rule_route("map the floats in the Arabian Sea") == "chart"
+
+
+def test_a_where_did_question_routes_to_chart():
+    assert rule_route("where did float 1900083 go in 2003") == "chart"
+
+
+def test_counting_profiles_is_still_a_data_question():
+    assert rule_route("how many profiles are there per region") == "data"
