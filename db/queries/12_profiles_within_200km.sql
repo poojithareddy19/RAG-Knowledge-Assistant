@@ -1,9 +1,10 @@
 -- Question: Profiles within 200 km of a given coordinate (15.0, 65.0).
 
 WITH target AS (
-    SELECT
-        15.0::double precision AS lat,
-        65.0::double precision AS lon
+    SELECT ST_SetSRID(
+        ST_MakePoint(65.0, 15.0),
+        4326
+    )::geography AS at
 )
 SELECT
     p.profile_id,
@@ -11,28 +12,8 @@ SELECT
     p.obs_time,
     p.latitude,
     p.longitude,
-    6371.0 * 2 * ASIN(
-        SQRT(
-            POWER(
-                SIN(RADIANS(p.latitude - target.lat) / 2),
-                2
-            )
-            + COS(RADIANS(target.lat))
-            * COS(RADIANS(p.latitude))
-            * POWER(
-                SIN(RADIANS(p.longitude - target.lon) / 2),
-                2
-            )
-        )
-    ) AS distance_km
+    ST_Distance(p.geom, target.at) / 1000.0 AS distance_km
 FROM profiles p
 CROSS JOIN target
-WHERE 6371.0 * 2 * ASIN(
-    SQRT(
-        POWER(SIN(RADIANS(p.latitude - target.lat) / 2), 2)
-        + COS(RADIANS(target.lat))
-        * COS(RADIANS(p.latitude))
-        * POWER(SIN(RADIANS(p.longitude - target.lon) / 2), 2)
-    )
-) <= 200
+WHERE ST_DWithin(p.geom, target.at, 200000)
 ORDER BY distance_km;

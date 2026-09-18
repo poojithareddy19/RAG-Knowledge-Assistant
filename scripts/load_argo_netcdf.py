@@ -13,6 +13,7 @@ import sys
 from dotenv import load_dotenv
 
 from src.ingestion.argo_netcdf import PARAMETERS, read_paths
+from src.ingestion.regions import fallback_count
 from src.utils.db import cursor
 
 load_dotenv()
@@ -136,6 +137,16 @@ def load(targets):
         f"{len(floats)} floats, {inserted} profiles inserted "
         f"({skipped} already present), {measurements} measurements"
     )
+
+    # A fallback is a position no basin polygon contains, answered by the old
+    # inequalities. Silence here would be a quiet return to the coarse rule.
+    fallbacks = fallback_count()
+
+    if fallbacks:
+        print(
+            f"{fallbacks} positions fell back to the latitude and longitude "
+            "rule because no region polygon contained them"
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,11 @@
 ﻿services:
   db:
-    image: pgvector/pgvector:pg16
+    # Built rather than pulled: this project needs pgvector for the embeddings
+    # and PostGIS for the basin polygons, and no published image carries both.
+    # See db/Dockerfile.
+    build:
+      context: ./db
+    image: gda-postgis-pgvector:16
     container_name: gda_postgres
     environment:
       POSTGRES_USER: gda

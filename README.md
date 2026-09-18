@@ -154,17 +154,20 @@ cp .env.example .env
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
-Start PostgreSQL with pgvector. The schema, extension and read-only role in `db/` are applied automatically on first boot.
+Start PostgreSQL. The image is built from [`db/Dockerfile`](db/Dockerfile) rather than pulled, because this project needs two extensions and no published image carries both: pgvector for the document and summary embeddings, PostGIS for the basin polygons and profile positions. The schema, extensions and read-only role in `db/` are applied automatically on first boot.
 
 ```bash
-docker compose up -d db
+docker compose up -d --build db
 ```
 
-Those files run only when the volume is empty. On a database created before the QC columns existed, apply the migration by hand:
+Those files run only when the volume is empty. On a database created before a migration existed, apply it by hand:
 
 ```bash
 docker compose exec -T db psql -U gda -d gda < db/004_argo_qc.sql
+docker compose exec -T db psql -U gda -d gda < db/007_postgis.sql
 ```
+
+`007_postgis.sql` adds the `geom` column, backfills it from the existing latitude and longitude, indexes it and creates the `regions` table. It is safe to re-run. The polygons that fill that table are not committed and not downloaded: see [Region polygons](#region-polygons).
 
 The default provider is Ollama, which needs no API key:
 
@@ -206,6 +209,20 @@ Or generate synthetic ARGO-shaped data with a planted 0.02 °C/year warming sign
 ```bash
 python scripts/make_sample_data.py
 ```
+
+### Region polygons
+
+Region used to be three latitude and longitude inequalities, which put the Gulf of Aden in the Arabian Sea and the whole Mozambique Channel in the Southern Indian Ocean. It is now a containment test against real basin polygons.
+
+Those polygons are a third party dataset with its own licence, so this repository neither ships them nor downloads them on your behalf. Fetch the IHO Sea Areas layer from [marineregions.org](https://www.marineregions.org/downloads.php), export it as GeoJSON in EPSG:4326, save it as `data/raw/regions.geojson`, then:
+
+```bash
+python scripts/load_regions.py
+```
+
+The script fails with an explicit message when the file is absent rather than reaching for the network.
+
+[`region_for`](src/ingestion/regions.py) keeps the inequalities as its fallback, because a float in open ocean sits inside no published basin and ingestion must not fail or write a NULL region over it. Each fallback is counted, and the loaders print that count when they finish, so a return to the coarse rule is visible rather than silent.
 
 ### Build the semantic layer
 

@@ -34,7 +34,7 @@ from pathlib import Path
 
 import requests
 
-from src.ingestion.regions import region_for
+from src.ingestion.regions import region_by_bounds
 
 GDAC = "https://data-argo.ifremer.fr"
 
@@ -209,7 +209,9 @@ def _by_region(by_float) -> list[str]:
     for key in sorted(by_float):
         first = by_float[key][0]
 
-        region = region_for(
+        # The inequalities, not the polygons: this script picks a download
+        # list and must not need a database to do it.
+        region = region_by_bounds(
             _number(first.get("latitude")) or 0.0,
             _number(first.get("longitude")) or 0.0,
         )
