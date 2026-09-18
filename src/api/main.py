@@ -40,6 +40,17 @@ app.add_middleware(
 
 _service: RAGService | None = None
 
+# session_id -> the recent (question, answer) pairs of that conversation.
+#
+# In process and in memory, which is worth stating plainly rather than
+# discovering: it does not survive a restart, and it does not work across
+# workers, because a second uvicorn worker has its own copy of this dict and a
+# follow up routed there sees no history. For a single-process deployment it is
+# enough, and a follow up that loses its history degrades to being answered as
+# a standalone question rather than to an error. Redis or a sessions table is
+# the fix when either of those stops being acceptable.
+_history: dict[str, list[tuple[str, str]]] = {}
+
 
 def service() -> RAGService:
     """Build the service on first request, not at import time."""
@@ -49,6 +60,21 @@ def service() -> RAGService:
         _service = RAGService()
 
     return _service
+
+
+def _max_turns() -> int:
+    return int(cfg.get("conversation", {}).get("max_turns", 4))
+
+
+def remember(session_id: str, question: str, answer: str) -> None:
+    """Append one exchange to a session, keeping only the recent turns."""
+    turns = _history.setdefault(session_id, [])
+    turns.append((question, answer))
+
+    cap = _max_turns()
+
+    if cap > 0 and len(turns) > cap:
+        del turns[:-cap]
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -112,7 +138,17 @@ def ask(req: AskRequest) -> AskResponse:
         result["route_decided_by"] = "override"
 
     else:
-        result = svc.answer(req.question)
+        result = svc.answer(
+            req.question,
+            history=_history.get(req.session_id) if req.session_id else None,
+        )
+
+    if req.session_id:
+        remember(
+            req.session_id,
+            req.question,
+            str(result.get("answer", ""))[:400],
+        )
 
     # Binary chart data does not belong in a JSON response.
     result.pop("chart_png", None)

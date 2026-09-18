@@ -376,6 +376,22 @@ def _page_settings(cfg):
     )
 
 
+def _remember(cfg, history, question, answer):
+    """Append this exchange, keeping only the turns the rewriter may use.
+
+    Lives in session state, so it is per browser session and disappears with
+    it. That is the honest scope of the feature: nothing here is persisted.
+    """
+    history.append((question, str(answer)[:400]))
+
+    cap = int(
+        cfg.get("conversation", {}).get("max_turns", 4)
+    )
+
+    if cap > 0 and len(history) > cap:
+        del history[:-cap]
+
+
 def _page_ocean_data(cfg):
     """Display-only ocean data interface."""
 
@@ -397,6 +413,12 @@ def _page_ocean_data(cfg):
         key="ocean_question",
     )
 
+    history = st.session_state.setdefault("ocean_history", [])
+
+    if history and st.button("Clear conversation", key="ocean_clear"):
+        history.clear()
+        st.rerun()
+
     if not st.button("Ask", key="ocean_ask") or not question.strip():
         return
 
@@ -404,12 +426,15 @@ def _page_ocean_data(cfg):
         "Routing, generating SQL, running query…"
     ):
         try:
-            result = svc.answer(question)
+            # A copy, because the service must not see the turn being asked.
+            result = svc.answer(question, history=list(history))
         except Exception as exc:
             st.error(
                 f"The query could not be completed: {exc}"
             )
             return
+
+    _remember(cfg, history, question, result.get("answer", ""))
 
     st.write(
         f"**Route:** `{result['route']}` "
@@ -438,6 +463,13 @@ def _page_ocean_data(cfg):
         return
 
     st.success(result["answer"])
+
+    rewritten = result.get("question_rewritten")
+
+    if rewritten and rewritten != question:
+        # Shown rather than hidden: if the follow up was resolved into the
+        # wrong question, this line is the only way to see it.
+        st.caption(f"Answered as: {rewritten}")
 
     if result.get("chart_spec"):
         # A domain plot: a track, a cast, a section or a T-S cloud. Interactive,

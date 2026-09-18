@@ -21,6 +21,9 @@ class AskRequest(BaseModel):
         max_length=500,
     )
     route_override: Literal["documents", "data", "chart"] | None = None
+    # Opaque, client chosen. Supplying the same one on a later request is what
+    # makes "and in 2022?" resolvable; omitting it asks a standalone question.
+    session_id: str | None = Field(default=None, max_length=128)
 
 
 class AskResponse(BaseModel):
@@ -41,6 +44,10 @@ class AskResponse(BaseModel):
     row_count: int | None = None
     elapsed_ms: float | None = None
     db_elapsed_ms: float | None = None
+    # The question as asked, and the standalone version that was actually run.
+    # They differ only when a follow up was resolved against session history.
+    question: str | None = None
+    question_rewritten: str | None = None
     # A Plotly figure for the domain plots, present only when the result has
     # a shape one of them fits. chart_kind names it either way, so a client
     # that only renders images still knows what it was given.

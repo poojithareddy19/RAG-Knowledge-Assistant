@@ -38,6 +38,7 @@ from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
 from src.monitoring.logger import log_interaction, log_result
 from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
+from src.router.rewriter import rewrite
 from src.semantic.index import SemanticIndex, Summary, as_context
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql
@@ -181,9 +182,21 @@ class RAGService:
     def answer(
         self,
         question: str,
+        history: list[tuple[str, str]] | None = None,
     ) -> dict:
-        """Route, delegate and log one query exactly once."""
+        """Route, delegate and log one query exactly once.
+
+        ``history`` is the recent (question, answer) pairs of this
+        conversation, oldest first. When there is any, the question is first
+        rewritten into a standalone one, and everything after this line works
+        on that rewrite alone. Nothing downstream knows a conversation exists.
+        """
         started = time.perf_counter()
+
+        asked = question
+
+        if history:
+            question = rewrite(question, history)
 
         chosen, how = pick_route(
             question,
@@ -204,6 +217,11 @@ class RAGService:
         result["route"] = chosen
         result["route_decided_by"] = how
 
+        # Both, always. A bad rewrite is the most likely new failure mode and
+        # it is invisible unless the pair travels together.
+        result["question"] = asked
+        result["question_rewritten"] = question
+
         # Always the end-to-end wall clock. The database time, when there
         # is one, is reported separately as db_elapsed_ms.
         result["elapsed_ms"] = round(
@@ -216,8 +234,10 @@ class RAGService:
         )
 
         try:
+            # The question as typed, so the log reads back as the conversation
+            # happened. What was actually run is question_rewritten beside it.
             log_result(
-                question,
+                asked,
                 result,
             )
         except Exception:

@@ -94,7 +94,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Chunking        | `langchain-text-splitters`                | isolated to one file              |
 | LLM             | Ollama / OpenAI / Gemini                  | selected via `.env`               |
 | Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
-| Charts          | matplotlib, chosen from result shape      | PNG, served to both UIs           |
+| Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |
 | UI              | Streamlit (8 pages)                       |                                   |
 | Evaluation      | retrieval metrics + SQL execution metrics |                                   |
@@ -389,11 +389,13 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
 
+**Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the Streamlit page holds it in session state, so it disappears with the browser session. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
+
 **Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
-**Retrieval and generation.** No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. Stateless: no conversational memory. No individual document deletion.
+**Retrieval and generation.** No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. No individual document deletion.
 
-**Charts.** Line and bar only, chosen from result shape. No trajectory map and no depth-profile plot, which are the two views this domain actually expects.
+**Charts.** Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
 **Evaluation.** Text-to-SQL scores 0.652 execution accuracy over three runs against real data, and complex queries are much worse than that average suggests: window functions and multi-level groupings are both 1 in 3. One unanswerable question in six still gets a fabricated query rather than a refusal. The set has only ever been run against one model, so nothing separates this model's ceiling from the prompt's. The document retrieval side has no published numbers at all.
 

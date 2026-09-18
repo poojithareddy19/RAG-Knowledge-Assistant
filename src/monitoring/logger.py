@@ -143,6 +143,7 @@ def log_result(
         "confidence": result.get("confidence"),
         "reason": result.get("reason", ""),
         "route": result.get("route"),
+        "question_rewritten": result.get("question_rewritten"),
         "route_decided_by": result.get("route_decided_by"),
         "generated_sql": result.get("generated_sql"),
         "sql_rejected": (

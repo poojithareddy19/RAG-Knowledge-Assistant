@@ -65,6 +65,15 @@ router:
   # can take most of this on its own.
   gen_timeout_seconds: 120
 
+conversation:
+  # A follow up is rewritten into a standalone question before routing, so the
+  # router, the SQL generator and the cache all stay stateless.
+  enabled: true
+  # How many previous (question, answer) pairs the rewrite may look back over.
+  # A reference reaches back a turn or two; a longer window costs prompt tokens
+  # on every question and invites carrying over a filter the user has dropped.
+  max_turns: 4
+
 sql:
   allowed_tables:
     - floats
