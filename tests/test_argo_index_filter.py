@@ -14,6 +14,7 @@ from scripts.fetch_argo_index import (
     deduplicate,
     filter_index,
     float_id,
+    only_floats,
     parse_index,
     spread,
 )
@@ -194,3 +195,24 @@ def test_spread_visits_every_region_before_repeating_one():
         "Bay of Bengal",
         "Southern Indian Ocean",
     }
+
+
+def test_only_floats_keeps_every_cycle_of_the_named_floats():
+    rows = [
+        _row("incois/1900055/profiles/D1900055_001.nc", "12.5", "68.0"),
+        _row("incois/1900055/profiles/D1900055_002.nc", "12.6", "68.1"),
+        _row("incois/1900083/profiles/D1900083_001.nc", "12.7", "68.2"),
+    ]
+
+    kept = only_floats(rows, ["1900055"])
+
+    assert [row["file"] for row in kept] == [
+        "incois/1900055/profiles/D1900055_001.nc",
+        "incois/1900055/profiles/D1900055_002.nc",
+    ]
+
+
+def test_only_floats_ignores_blank_ids():
+    rows = [_row("incois/1900055/profiles/D1900055_001.nc", "12.5", "68.0")]
+
+    assert only_floats(rows, ["", "  "]) == []

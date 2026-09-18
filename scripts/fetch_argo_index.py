@@ -185,6 +185,18 @@ def spread(rows, limit: int | None = None, floats: int | None = None) -> list[di
     return out
 
 
+def only_floats(rows, ids) -> list[dict[str, str]]:
+    """Keep the rows belonging to named floats, and drop the rest.
+
+    A round robin sample caps every float at the same depth, which makes
+    "which float recorded the most profiles" a tie rather than a question.
+    Taking a few floats in full is what puts a unique winner in the data.
+    """
+    wanted = {str(value).strip() for value in ids if str(value).strip()}
+
+    return [row for row in rows if float_id(row["file"]) in wanted]
+
+
 def _by_region(by_float) -> list[str]:
     """Float ids, interleaved across the regions their first row sits in.
 
@@ -343,6 +355,11 @@ def main() -> int:
         help="sample at most this many distinct floats",
     )
     parser.add_argument(
+        "--include",
+        default=None,
+        help="comma separated float ids, taken in full instead of sampled",
+    )
+    parser.add_argument(
         "--refresh",
         action="store_true",
         help="re-download the index instead of reading the cached copy",
@@ -371,6 +388,12 @@ def main() -> int:
     print(f"{len(inside)} rows in the Indian Ocean box")
 
     unique = deduplicate(inside)
+
+    if args.include:
+        unique = only_floats(unique, args.include.split(","))
+
+        print(f"{len(unique)} rows for the named floats")
+
     selected = spread(unique, args.limit, args.floats)
 
     floats = {float_id(row["file"]) for row in selected}
