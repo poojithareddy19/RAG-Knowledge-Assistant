@@ -96,6 +96,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
 | Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |
+| Agent interface | MCP server on stdio                       | four tools, none of them raw SQL  |
 | UI              | Streamlit (8 pages)                       |                                   |
 | Evaluation      | retrieval metrics + SQL execution metrics |                                   |
 | Logging         | structured JSONL                          |                                   |
@@ -130,6 +131,7 @@ RAG_Assistant/
 ├── scripts/         fetch_argo_index.py · load_argo_netcdf.py
 │                    load_argo.py · build_semantic_index.py
 │                    make_sample_data.py · run_ab_test.py
+│                    mcp/            MCP server (four tools, no raw SQL)
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
 ```
@@ -286,6 +288,41 @@ That shape was chosen after an additive version let a question with very low mea
 Below `confidence.answer_threshold` the system returns the closest passages and an explanation instead of an answer.
 
 Retrieval signals rather than asking the LLM to self-report, because a model cannot know that the corpus lacks an answer, only that its context window does. Retrieval statistics measure corpus-to-question fit directly and cost nothing extra.
+
+## Model Context Protocol
+
+The assistant is also an MCP server ([`src/mcp/server.py`](src/mcp/server.py)), so an MCP client can query the ocean data as tools rather than through the web page or the API.
+
+```bash
+python -m src.mcp.server
+```
+
+It speaks stdio, so a client launches it rather than connecting to a port:
+
+```json
+{
+  "mcpServers": {
+    "argo": {
+      "command": "python",
+      "args": ["-m", "src.mcp.server"],
+      "cwd": "/path/to/RAG_Assistant"
+    }
+  }
+}
+```
+
+Four tools:
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `query_argo` | `question` | answer, generated SQL, columns, rows |
+| `list_floats` | `region`, `year` (both optional) | float ids with profile counts and date ranges |
+| `get_profile` | `float_id`, `cycle` (optional) | one float's depth levels |
+| `describe_schema` | none | the column catalog as text |
+
+**There is deliberately no tool that accepts SQL.** The four safety layers exist so that generated SQL is constrained before it reaches the database, and a `run_sql` tool would hand an external client a way around all of them. A test asserts that no registered tool takes a statement, under any argument name, and that every tool's schema closes `additionalProperties` so one cannot arrive under a different one.
+
+`list_floats` and `get_profile` do not go through the model at all. Their shape is fixed, so they are parameterised queries written by hand in the server module, capped and executed as the read-only role.
 
 ## Evaluation
 

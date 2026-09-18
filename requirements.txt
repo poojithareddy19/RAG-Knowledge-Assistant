@@ -44,5 +44,10 @@ plotly>=5.22
 fastapi>=0.111
 uvicorn[standard]>=0.30
 httpx>=0.27
+
+# Model Context Protocol server (src/mcp/server.py). 2.x, not the 1.2 the
+# plan named: the handler API this server is written against is 2.x, and a 1.x
+# install would import and then fail to start.
+mcp>=2.2
 pytest>=8.0
 ruff>=0.5
