@@ -23,10 +23,19 @@ def _relevance_flags(retrieved: Sequence[str], relevant: set[str], k: int) -> li
 
 
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
+    """Fraction of the relevant items that appear in the top k.
+
+    Counted over distinct items. Relevance here is keyed by document and page,
+    and a page is usually several chunks, so summing the hits would count one
+    relevant page twice for returning two of its chunks and report a recall
+    above 1.
+    """
     if not relevant:
         return 0.0
-    hits = sum(_relevance_flags(retrieved, relevant, k))
-    return hits / len(relevant)
+
+    found = {key for key in list(retrieved)[:k] if key in relevant}
+
+    return len(found) / len(relevant)
 
 
 def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:

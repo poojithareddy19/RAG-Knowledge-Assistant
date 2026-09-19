@@ -6,7 +6,7 @@ Two kinds of question, one system. **What does this data mean?** is answered fro
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router, conversational follow-ups, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.620 execution accuracy](#results) on 52 SQL questions across two models, and [hit@5 of 0.200](#retrieval-results) on 25 manual questions, which is the weakest number here and is discussed rather than buried. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router, conversational follow-ups, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.620 execution accuracy](#results) on 52 SQL questions across two models, and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -169,6 +169,13 @@ Those files run only when the volume is empty. On a database created before a mi
 ```bash
 docker compose exec -T db psql -U gda -d gda < db/004_argo_qc.sql
 docker compose exec -T db psql -U gda -d gda < db/007_postgis.sql
+```
+
+A database created before the vector index was changed from IVFFlat to HNSW still has the old one, and the old one silently loses most of its recall. Replace it:
+
+```bash
+docker compose exec -T db psql -U gda -d gda -c   "DROP INDEX IF EXISTS idx_chunks_embedding;
+   CREATE INDEX idx_chunks_embedding ON doc_chunks USING hnsw (embedding vector_cosine_ops);"
 ```
 
 `007_postgis.sql` adds the `geom` column, backfills it from the existing latitude and longitude, indexes it and creates the `regions` table. It is safe to re-run. The polygons that fill that table are not committed and not downloaded: see [Region polygons](#region-polygons).
@@ -360,21 +367,33 @@ Two harnesses, because the two paths fail differently.
 
 | Metric | k=1 | k=3 | k=5 |
 | --- | --- | --- | --- |
-| **Hit@k** | 0.080 | 0.200 | **0.200** |
-| Recall@k | 0.080 | 0.200 | 0.240 |
-| Precision@k | 0.080 | 0.067 | 0.048 |
-| nDCG@k | 0.080 | 0.145 | 0.163 |
-| MRR | | | 0.127 |
+| **Hit@k** | 0.640 | 0.920 | **0.960** |
+| Recall@k | 0.640 | 0.920 | 0.960 |
+| Precision@k | 0.640 | 0.307 | 0.192 |
+| nDCG@k | 0.640 | 0.862 | 0.941 |
+| MRR | | | 0.788 |
 
-**This is bad, and it is the most useful number in this README.** Five questions of twenty-five find their page in the top five.
+**The first version of this table read 0.200 at k=5, and the gap between the two is the most useful thing in this file.**
 
-The failure has a clear shape. The right *document* is in the top five for 18 of 25 questions, so the system knows which manual answers a question about the gradient test. It lands on the wrong *page* of it: the nearest retrieved page is off by 2, 3, 6, 8, 9, 10, 12, 19, 20, 28, 44 and 47 pages on the questions it misses. It finds the right book and the wrong chapter.
+The cause was the vector index. `db/002_pgvector.sql` created `ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`, a setting copied from pgvector's guidance for tens of thousands of rows. IVFFlat partitions the vectors into `lists` clusters and, at the default `ivfflat.probes = 1`, searches exactly one cluster. With 668 chunks in 100 lists that is roughly seven candidates per query.
 
-The most likely cause is visible in the chunks. Every page of both manuals begins with the same running header, `NN Argo Data Management Quality Control Manual for CTD and Trajectory Data Version 3.9`, so a large and identical block of text sits at the top of hundreds of chunks and flattens the distance between them. Stripping running headers during chunking is the obvious first fix and has not been done.
+The symptom that gave it away was not the low score. It was this:
 
-An unrelated 392-page machine learning textbook was in the corpus from an earlier version of this project and was taking 25% of every top-five. Removing it changed the score by nothing at all: the same five questions hit and the same twenty miss, because the right page was not in the candidate set either way. That is worth knowing before blaming a distractor for a retrieval problem.
+```
+gold page in top-20 candidates: 5/25
+gold page in top-50 candidates: 5/25   <- identical
+gold page in top-100 candidates: 24/25
+```
 
-Reproduce it from the Evaluation page of the dashboard, or:
+Asking for more candidates returned the same rows, which no honest ranking does. Switching the index to HNSW changed hit@5 from 0.160 to 0.960 with nothing else touched.
+
+Two things this cost, both worth recording:
+
+**The obvious hypothesis was wrong.** Every page of both manuals carries the same running header, so the first fix attempted was stripping repeated headers and footers during chunking. It was implemented, tested and measured, and it made retrieval *worse*: hit@5 0.840 with stripping against 0.960 without, on a fixed index. The header is useful signal, not noise, because it names the manual a chunk came from. The code was reverted. Had the index bug not been found first, that change would have shipped as an improvement on the strength of a number that rose from 0.160 for unrelated reasons.
+
+**One published metric was wrong.** `recall_at_k` summed hits over the retrieved list, so two chunks from the same relevant page counted twice and recall could exceed 1. It now counts distinct pages.
+
+Reproduce from the Evaluation page of the dashboard, or:
 
 ```python
 from src.evaluation.evaluator import evaluate_retrieval
@@ -382,8 +401,6 @@ from src.utils.pipeline import RAGService
 
 report = evaluate_retrieval(RAGService().retriever, "data/evaluation/questions.csv", k=5)
 ```
-
-The number is published rather than tuned. The previous version of this file admitted it had no retrieval numbers at all; having a bad one that says where the problem is beats having none.
 
 **Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). The metric is **execution accuracy**: run the generated query and a hand-written reference query and compare their result sets. Whether a query parses says nothing about whether it answered the question.
 
@@ -540,7 +557,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
-**Retrieval and generation.** Retrieval over the manuals is the weakest part of this system: hit@5 of 0.200 on 25 questions, finding the right manual for 18 of 25 but the right page for 5. The running header repeated on every page of both manuals is the prime suspect and stripping it is untried. No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. No individual document deletion.
+**Retrieval and generation.** Retrieval over the manuals reaches hit@5 of 0.960 on 25 questions, but that gold set was written by the same person who chose the corpus, which is the honest limit on what it shows. One question in twenty-five is still missed at k=5. No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. No individual document deletion.
 
 **Charts.** Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
@@ -564,10 +581,10 @@ Done:
 - [x] Few-shot window-function examples, measured: they did not move the bucket
 - [x] A second model on the same 52 questions, which closed the refusal gap
 - [x] A document retrieval gold set that is not a five-row template, with numbers published
+- [x] Retrieval fixed: the IVFFlat vector index was searching one cluster of a hundred. HNSW took hit@5 from 0.160 to 0.960
 
 Not done, honestly:
 
-- [ ] Retrieval is weak: hit@5 of 0.200. Strip the running headers from chunks and measure again
 - [ ] Load the IHO basin polygons, so `region` comes from geometry rather than the fallback inequalities
 - [ ] Answer a single question from documents and data together, which is still the largest architectural gap
 - [ ] Real QC flags on the CSV loader too

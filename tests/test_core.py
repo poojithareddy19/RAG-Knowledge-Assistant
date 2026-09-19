@@ -81,3 +81,20 @@ def test_faiss_add_search_persist(tmp_path):
     results = reloaded.search(_fake_vec(chunks[2].text, dim), k=3)
     assert results[0].chunk.chunk_id == "D::p1::c2"
     assert results[0].score == pytest.approx(1.0, abs=1e-3)
+
+
+def test_recall_never_exceeds_one_when_a_page_returns_several_chunks():
+    """A page is many chunks, and finding two of them is still one page found."""
+    from src.evaluation.metrics import recall_at_k
+
+    retrieved = ["doc.pdf|12", "doc.pdf|12", "doc.pdf|99"]
+
+    assert recall_at_k(retrieved, {"doc.pdf|12"}, 5) == 1.0
+
+
+def test_recall_counts_distinct_relevant_pages():
+    from src.evaluation.metrics import recall_at_k
+
+    retrieved = ["doc.pdf|12", "doc.pdf|12", "doc.pdf|13"]
+
+    assert recall_at_k(retrieved, {"doc.pdf|12", "doc.pdf|13", "doc.pdf|14"}, 5) == 2 / 3
