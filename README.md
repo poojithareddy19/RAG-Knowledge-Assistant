@@ -247,15 +247,47 @@ That is 118 and 99 pages, 309 and 371 chunks. The retrieval gold set in `data/ev
 
 Region used to be three latitude and longitude inequalities, which put the Gulf of Aden in the Arabian Sea and the whole Mozambique Channel in the Southern Indian Ocean. It is now a containment test against real basin polygons.
 
-Those polygons are a third party dataset with its own licence, so this repository neither ships them nor downloads them on your behalf. Fetch the IHO Sea Areas layer from [marineregions.org](https://www.marineregions.org/downloads.php), export it as GeoJSON in EPSG:4326, save it as `data/raw/regions.geojson`, then:
+Those polygons are a third party dataset with its own licence, so this repository neither ships them nor downloads them on your behalf. The IHO Sea Areas layer is served by [Marine Regions](https://www.marineregions.org/) over a public WFS, so fetching the three basins this project uses is one request:
 
 ```bash
+curl -o data/raw/regions.geojson   "https://geo.vliz.be/geoserver/MarineRegions/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=MarineRegions:iho&outputFormat=application/json&CQL_FILTER=name%20IN%20('Arabian%20Sea','Bay%20of%20Bengal','Indian%20Ocean')"
+
 python scripts/load_regions.py
 ```
 
-The script fails with an explicit message when the file is absent rather than reaching for the network.
+`scripts/load_regions.py` reads only that file and fails with an explicit message when it is absent, rather than reaching for the network itself. Marine Regions asks to be cited when its data is used; see their [citation guidance](https://www.marineregions.org/disclaimer.php).
 
-[`region_for`](src/ingestion/regions.py) keeps the inequalities as its fallback, because a float in open ocean sits inside no published basin and ingestion must not fail or write a NULL region over it. Each fallback is counted, and the loaders print that count when they finish, so a return to the coarse rule is visible rather than silent.
+Loading the polygons does not reassign the profiles already in the database, because `region` is written at ingestion time. Backfill them:
+
+```bash
+docker compose exec -T db psql -U gda -d gda -c "
+WITH hit AS (
+    SELECT p.profile_id, r.name
+    FROM profiles p
+    JOIN LATERAL (
+        SELECT r.name FROM regions r
+        WHERE ST_Contains(r.geom, ST_SetSRID(ST_MakePoint(p.longitude, p.latitude), 4326))
+        ORDER BY ST_Area(r.geom) LIMIT 1
+    ) r ON true
+)
+UPDATE profiles p SET region = hit.name FROM hit WHERE hit.profile_id = p.profile_id;"
+
+python scripts/build_semantic_index.py
+```
+
+The smallest containing polygon wins, so a point inside both a marginal sea and the ocean around it is assigned the sea.
+
+[`region_for`](src/ingestion/regions.py) keeps the inequalities as its fallback, because a float can sit inside no polygon this project loaded and ingestion must not fail or write a NULL region over it. That fallback is not hypothetical: the IHO publishes the Gulf of Aden and the Mozambique Channel as their own sea areas, so a float there matches none of the three and falls back to the old rule. 32 of 1,099 profiles, about 3%, are in that position. Each fallback is counted and the loaders print the count when they finish, so a return to the coarse rule is visible rather than silent.
+
+What changed when the polygons replaced the inequalities, over 1,099 real profiles:
+
+| Region | By inequalities | By polygon |
+| --- | --- | --- |
+| Southern Indian Ocean | 484 | 612 |
+| Bay of Bengal | 321 | 282 |
+| Arabian Sea | 294 | 205 |
+
+128 profiles, nearly one in eight, were in the wrong basin. The inequalities put everything north of 5N and west of 78E in the Arabian Sea, which swept in a slice of ocean the IHO does not consider part of it.
 
 ### Build the semantic layer
 
@@ -444,7 +476,7 @@ Two models, both local through Ollama, on the same questions and the same prompt
 | window       | 6   | 0.333 | 0.333 |
 | unanswerable | 6   | 5/6 refused | **6/6 refused** |
 
-llama3.1 is the mean of two runs, qwen a single run. Quantisation differs and is worth stating: llama3.1 is Q4_K_M, qwen is `7b-instruct-q3_K_M`, one step lower, because the larger file would not fit on the disk it was run from. Some of qwen's weakness on the easy buckets plausibly belongs to that rather than to the model.
+llama3.1 is the mean of two runs, qwen a single run. Both were measured before the IHO basin polygons replaced the latitude and longitude inequalities, which moved 128 profiles between regions. The set was re-run afterwards to check that it had not quietly shifted the score: 0.630, inside the 0.609 to 0.630 the two earlier runs produced, with every bucket unchanged. Reference and generated queries both read the same database, so a change in the data moves them together. Quantisation differs and is worth stating: llama3.1 is Q4_K_M, qwen is `7b-instruct-q3_K_M`, one step lower, because the larger file would not fit on the disk it was run from. Some of qwen's weakness on the easy buckets plausibly belongs to that rather than to the model.
 
 Neither model is simply better. qwen is worse overall, much worse on the simple buckets, clearly better on grouped aggregates, and perfect at refusing. Picking one is a trade, not an upgrade.
 
@@ -551,7 +583,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 ## Limitations
 
-**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region is assigned by three latitude/longitude inequalities in [`src/ingestion/regions.py`](src/ingestion/regions.py), which is coarse for a field that nearly every query groups by.
+**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region comes from IHO basin polygons in PostGIS, with the old latitude and longitude inequalities kept as the fallback for a position inside none of the three loaded basins, which is 3% of profiles.
 
 **Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the Streamlit page holds it in session state, so it disappears with the browser session. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
 
@@ -577,6 +609,7 @@ Done:
 - [x] Conversational follow-ups, by rewriting a follow up into a standalone question
 - [x] CSV and NetCDF export, with units and the generating query attached
 - [x] PostGIS geometry on profiles, with a spatial region lookup and `ST_DWithin` distance queries
+- [x] IHO basin polygons loaded and the existing profiles backfilled, moving 128 of 1,099 into a different basin
 - [x] An MCP server, with no tool that accepts SQL
 - [x] Few-shot window-function examples, measured: they did not move the bucket
 - [x] A second model on the same 52 questions, which closed the refusal gap
@@ -585,7 +618,6 @@ Done:
 
 Not done, honestly:
 
-- [ ] Load the IHO basin polygons, so `region` comes from geometry rather than the fallback inequalities
 - [ ] Answer a single question from documents and data together, which is still the largest architectural gap
 - [ ] Real QC flags on the CSV loader too
 - [ ] Persist conversation history, which currently dies with the process
