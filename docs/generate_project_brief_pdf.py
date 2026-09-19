@@ -64,7 +64,7 @@ content = [
     ], bulletType='bullet', bulletFontName='Helvetica', bulletFontSize=10, start='•', spaceAfter=8),
     Spacer(1, 8),
     Paragraph('<b>E. Technology stack</b>', heading_style),
-    Paragraph('The system is built with Python, Streamlit for the UI, FAISS for vector search, sentence-transformers for embeddings, and support for OpenAI, Gemini, or Ollama as the generation backend.'),
+    Paragraph('The system is built with Python, Streamlit for the UI, FAISS for vector search, sentence-transformers for embeddings, and Ollama running local open-weight models as the generation backend.'),
     Spacer(1, 8),
     Paragraph('<b>F. How to run it</b>', heading_style),
     Paragraph('Install the dependencies from the requirements file, configure the model provider in the environment settings, and launch the Streamlit app to upload documents and ask questions.'),

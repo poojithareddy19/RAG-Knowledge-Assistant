@@ -1,14 +1,16 @@
 """LLM provider abstraction.
 
-One interface, three backends selected by config/env:
+One backend today: ollama, local models over the Ollama HTTP API, no API key.
 
-  * openai  — OpenAI Chat Completions (also works for OpenAI-compatible APIs)
-  * gemini  — Google Generative AI
-  * ollama  — local models via the Ollama HTTP API (no API key)
+There were OpenAI and Gemini subclasses here too. They were deleted rather than
+kept warm, because neither had ever been run: no key was ever configured, the
+SQL generator does not go through this abstraction at all, and an untested
+provider is a claim of portability rather than portability. The shape is still
+here, so adding one back is a subclass and one line in ``_PROVIDERS``, but it
+should arrive with something that exercises it.
 
-Each provider returns a normalized ``LLMResponse`` with text and token usage so
-the rest of the system never branches on provider. Adding a provider is a new
-subclass + one line in ``get_llm``.
+The provider returns a normalized ``LLMResponse`` with text and token usage so
+the rest of the system never branches on provider.
 """
 from __future__ import annotations
 
@@ -32,74 +34,6 @@ class BaseLLM:
 
     def generate(self, system_prompt: str, user_prompt: str) -> LLMResponse:  # noqa: D401
         raise NotImplementedError
-
-
-class OpenAILLM(BaseLLM):
-    def __init__(self) -> None:
-        super().__init__()
-        from openai import OpenAI
-
-        api_key = (get_config().secrets.openai_api_key or "").strip()
-        if not api_key or api_key in {"...", "your_api_key"}:
-            raise ValueError(
-                "OPENAI_API_KEY is missing. Set it in .env when using GENERATION__PROVIDER=openai."
-            )
-        if not api_key.startswith("sk-"):
-            raise ValueError(
-                "OPENAI_API_KEY format is invalid. It should start with 'sk-'."
-            )
-
-        self.client = OpenAI(api_key=api_key)
-
-    def generate(self, system_prompt: str, user_prompt: str) -> LLMResponse:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        usage = resp.usage
-        return LLMResponse(
-            text=resp.choices[0].message.content or "",
-            tokens={
-                "prompt": getattr(usage, "prompt_tokens", 0),
-                "completion": getattr(usage, "completion_tokens", 0),
-                "total": getattr(usage, "total_tokens", 0),
-            },
-        )
-
-
-class GeminiLLM(BaseLLM):
-    def __init__(self) -> None:
-        super().__init__()
-        import google.generativeai as genai
-
-        genai.configure(api_key=get_config().secrets.google_api_key)
-        self._genai = genai
-
-    def generate(self, system_prompt: str, user_prompt: str) -> LLMResponse:
-        model = self._genai.GenerativeModel(
-            self.model, system_instruction=system_prompt
-        )
-        resp = model.generate_content(
-            user_prompt,
-            generation_config={
-                "temperature": self.temperature,
-                "max_output_tokens": self.max_tokens,
-            },
-        )
-        usage = getattr(resp, "usage_metadata", None)
-        tokens = {}
-        if usage is not None:
-            tokens = {
-                "prompt": getattr(usage, "prompt_token_count", 0),
-                "completion": getattr(usage, "candidates_token_count", 0),
-                "total": getattr(usage, "total_token_count", 0),
-            }
-        return LLMResponse(text=resp.text or "", tokens=tokens)
 
 
 class OllamaLLM(BaseLLM):
@@ -135,7 +69,7 @@ class OllamaLLM(BaseLLM):
         )
 
 
-_PROVIDERS = {"openai": OpenAILLM, "gemini": GeminiLLM, "ollama": OllamaLLM}
+_PROVIDERS = {"ollama": OllamaLLM}
 
 
 def get_llm() -> BaseLLM:

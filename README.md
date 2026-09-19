@@ -94,7 +94,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Embeddings      | `sentence-transformers` (BAAI/bge-small)  | swappable via config              |
 | Reranking       | cross-encoder `ms-marco-MiniLM-L-6-v2`    | on by default                     |
 | Chunking        | `langchain-text-splitters`                | isolated to one file              |
-| LLM             | Ollama / OpenAI / Gemini                  | selected via `.env`               |
+| LLM             | Ollama, local, no API key                 | `llama3.1:8b`, `qwen2.5-coder:7b` |
 | Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
 | Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |

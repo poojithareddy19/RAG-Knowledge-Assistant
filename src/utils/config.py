@@ -7,14 +7,14 @@ priority):
 
 Environment overrides use a double-underscore path syntax that mirrors the YAML
 nesting, e.g. ``RETRIEVAL__TOP_K=8`` overrides ``retrieval.top_k``. Flat keys
-such as ``OPENAI_API_KEY`` are also read directly for secrets.
+such as ``OLLAMA_BASE_URL`` are also read directly for secrets.
 
 Usage
 -----
     from src.utils.config import get_config
     cfg = get_config()
     cfg.retrieval.top_k         # -> int
-    cfg.generation.provider     # -> "openai"
+    cfg.generation.provider     # -> "ollama"
 """
 from __future__ import annotations
 
@@ -99,8 +99,6 @@ def get_config(config_path: str | None = None) -> AttrDict:
     data.setdefault("secrets", {})
     data["secrets"].update(
         {
-            "openai_api_key": os.getenv("OPENAI_API_KEY", ""),
-            "google_api_key": os.getenv("GOOGLE_API_KEY", ""),
             "ollama_base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         }
     )

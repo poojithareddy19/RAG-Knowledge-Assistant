@@ -24,9 +24,7 @@ sentence-transformers>=3.0,<4.0
 # Vector store
 faiss-cpu>=1.8
 
-# LLM providers (install only what you use)
-openai>=1.30
-google-generativeai>=0.7
+# LLM provider
 requests>=2.31
 
 # Testing
