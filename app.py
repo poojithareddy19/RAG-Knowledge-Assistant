@@ -101,7 +101,7 @@ def _page_upload(cfg):
         st.success("Ingestion complete.")
         st.dataframe(
             pd.DataFrame(results),
-            use_container_width=True,
+            width="stretch",
         )
 
         get_service.clear()
@@ -136,7 +136,7 @@ def _page_knowledge_base(cfg):
 
     st.dataframe(
         pd.DataFrame(rows),
-        use_container_width=True,
+        width="stretch",
     )
 
     if st.button("⚠️ Reset knowledge base"):
@@ -220,7 +220,7 @@ def _page_ask(cfg):
                     for source in ans.sources
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
         st.json(ans.confidence.to_dict())
@@ -277,7 +277,7 @@ def _page_evaluation(cfg):
 
         st.dataframe(
             pd.DataFrame([aggregate]),
-            use_container_width=True,
+            width="stretch",
         )
 
         st.caption(
@@ -356,7 +356,7 @@ def _page_monitoring(cfg):
                 summary["most_queried_documents"],
                 columns=["Document", "Retrievals"],
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -401,7 +401,7 @@ def _download_buttons(svc, result, question):
             data=to_csv_bytes(full),
             file_name="result.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
     with netcdf_column:
@@ -416,7 +416,7 @@ def _download_buttons(svc, result, question):
             data=blob,
             file_name="result.nc",
             mime="application/x-netcdf",
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -520,7 +520,7 @@ def _page_ocean_data(cfg):
         # because reading a position off a static map is guesswork.
         st.plotly_chart(
             result["chart_spec"],
-            use_container_width=True,
+            width="stretch",
         )
     elif result.get("chart_png"):
         st.image(result["chart_png"])
@@ -536,7 +536,7 @@ def _page_ocean_data(cfg):
                 result["rows"],
                 columns=result["columns"],
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
         _download_buttons(svc, result, question)
