@@ -19,6 +19,16 @@ st.set_page_config(
 )
 
 
+# Plotly fetches the land and coastlines of a geo plot as TopoJSON at render
+# time, and defaults to https://cdn.plot.ly/. Everything else here runs against
+# a local database and a local model, so an ocean map that quietly comes up
+# empty without internet access is the one networked dependency in the app.
+# The files are committed under static/, served by Streamlit at /app/static/,
+# and Plotly is pointed there. It appends "world_<resolution>m.json", so the
+# files sit flat in static/ rather than under the un/ path the CDN uses.
+PLOTLY_CONFIG = {"topojsonURL": "/app/static/"}
+
+
 @st.cache_resource(show_spinner="Loading models and vector store…")
 def get_service() -> RAGService:
     return RAGService()
@@ -521,6 +531,7 @@ def _page_ocean_data(cfg):
         st.plotly_chart(
             result["chart_spec"],
             width="stretch",
+            config=PLOTLY_CONFIG,
         )
     elif result.get("chart_png"):
         st.image(result["chart_png"])

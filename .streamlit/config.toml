@@ -1,0 +1,10 @@
+# Serve the files in static/ at /app/static/.
+#
+# This exists for one reason: Plotly draws the land and coastlines of a
+# scattergeo map from a TopoJSON file it fetches at render time, and it
+# defaults to https://cdn.plot.ly/. That turned an offline-capable app into one
+# whose maps silently came up empty without internet access, with no error to
+# explain it. The file is committed under static/un/ and app.py points Plotly
+# there instead.
+[server]
+enableStaticServing = true
