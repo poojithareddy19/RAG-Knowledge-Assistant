@@ -13,8 +13,8 @@ from src.utils.pipeline import RAGService
 
 
 st.set_page_config(
-    page_title="RAG Knowledge Assistant",
-    page_icon="🔎",
+    page_title="FloatChat",
+    page_icon="🌊",
     layout="wide",
 )
 
@@ -25,16 +25,19 @@ def get_service() -> RAGService:
 
 
 def _page_home(cfg):
-    st.title("Production RAG Knowledge Assistant")
+    st.title("FloatChat")
     st.caption(
-        f"v{cfg.app.version} — grounded answers with citations, "
-        "confidence and monitoring"
+        f"v{cfg.app.version}: ask the Argo float archive a question "
+        "and get an answer you can check"
     )
 
     st.markdown(
-        "This assistant answers questions **only** from your uploaded documents. "
-        "Every answer carries citations (document, page, chunk) and a confidence "
-        "score; when the evidence is too weak it declines instead of guessing."
+        "Two kinds of question, one assistant. **What does this data mean?** is "
+        "answered from the Argo manuals, with the document and page behind every "
+        "claim. **What does this data say?** is answered by SQL generated against "
+        "the measurements database, shown to you before you are asked to believe "
+        "the numbers. Either way, when the evidence is too weak it declines "
+        "instead of guessing."
     )
 
     svc = get_service()
@@ -46,9 +49,11 @@ def _page_home(cfg):
     c3.metric("Embedding dim", stats["dimension"])
 
     st.info(
-        "**Pipeline:** question → embed → vector retrieve → confidence gate → "
-        "grounded LLM answer → citations. Configure everything in "
-        "`config.yaml` / `.env`."
+        "**Manual path:** question → embed → vector retrieve → confidence gate "
+        "→ grounded answer → citations.\n\n"
+        "**Data path:** question → retrieve what the database holds → generate "
+        "SQL → validate → run read-only → table plus the query that made it.\n\n"
+        "Configure everything in `config.yaml` / `.env`."
     )
 
 
@@ -152,7 +157,7 @@ def _page_ask(cfg):
     question = st.text_input(
         "Your question",
         placeholder=(
-            "e.g. When are employees eligible for parental leave?"
+            "e.g. What does a quality control flag of 4 mean?"
         ),
     )
 
@@ -194,7 +199,7 @@ def _page_ask(cfg):
     for source in ans.sources:
         with st.expander(
             f"[{source.rank}] "
-            f"{source.chunk.doc_name} — "
+            f"{source.chunk.doc_name}, "
             f"page {source.chunk.page} · "
             f"sim {source.score:.3f} · "
             f"{source.chunk.chunk_id}"
@@ -278,7 +283,7 @@ def _page_evaluation(cfg):
         st.caption(
             "Generation metrics (faithfulness, groundedness, "
             "answer relevance) are computed via the LLM-judge / "
-            "Ragas path — see docs."
+            "Ragas path, see docs."
         )
 
 

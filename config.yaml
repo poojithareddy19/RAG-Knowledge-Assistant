@@ -6,7 +6,7 @@
 # ============================================================================
 
 app:
-  name: "Production RAG Knowledge Assistant"
+  name: "FloatChat"
   version: "0.1.0"
 
 paths:
