@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -10,7 +8,6 @@ import streamlit as st
 from src.utils.config import get_config
 from src.utils.export import to_csv_bytes, to_netcdf_bytes
 from src.utils.pipeline import RAGService
-
 
 st.set_page_config(
     page_title="FloatChat",
@@ -67,101 +64,16 @@ def _page_home(cfg):
     )
 
 
-def _page_upload(cfg):
-    st.title("Upload Documents")
-
-    svc = get_service()
-    exts = [e.lstrip(".") for e in svc.supported_extensions()]
-
-    st.write(f"Supported types: {', '.join(exts)}")
-
-    files = st.file_uploader(
-        "Upload one or more documents",
-        type=exts,
-        accept_multiple_files=True,
-    )
-
-    dedup = st.checkbox(
-        "Skip documents already indexed (duplicate detection)",
-        value=True,
-    )
-
-    if files and st.button("Ingest & index", type="primary"):
-        progress = st.progress(0.0)
-        results = []
-
-        for i, file in enumerate(files, start=1):
-            tmp_dir = Path(tempfile.mkdtemp(prefix="rag_upload_"))
-            tmp_path = tmp_dir / file.name
-            tmp_path.write_bytes(file.getvalue())
-
-            try:
-                with st.spinner(f"Processing {file.name}…"):
-                    results.append(
-                        svc.ingest_file(
-                            tmp_path,
-                            skip_duplicates=dedup,
-                        )
-                    )
-            finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
-            progress.progress(i / len(files))
-
-        st.success("Ingestion complete.")
-        st.dataframe(
-            pd.DataFrame(results),
-            width="stretch",
-        )
-
-        get_service.clear()
-
-
-def _page_knowledge_base(cfg):
-    st.title("Knowledge Base")
-
-    svc = get_service()
-    stats = svc.stats()
-
-    c1, c2 = st.columns(2)
-    c1.metric("Documents", stats["documents"])
-    c2.metric("Total chunks", stats["chunks"])
-
-    if not stats["manifest"]:
-        st.warning(
-            "No documents indexed yet. Go to **Upload Documents**."
-        )
-        return
-
-    rows = [
-        {
-            "Document": name,
-            "Pages": metadata.get("pages", 0),
-            "Chunks": metadata.get("chunks", 0),
-            "Embedding model": metadata.get("embedding_model", ""),
-            "Last indexed": metadata.get("indexed_at", ""),
-        }
-        for name, metadata in stats["manifest"].items()
-    ]
-
-    st.dataframe(
-        pd.DataFrame(rows),
-        width="stretch",
-    )
-
-    if st.button("⚠️ Reset knowledge base"):
-        svc.reset()
-        get_service.clear()
-        st.rerun()
-
-
 def _page_ask(cfg):
     st.title("Ask a Question")
 
     svc = get_service()
 
     if svc.stats()["chunks"] == 0:
-        st.warning("Index some documents first.")
+        st.warning(
+            "The Argo manuals are not indexed yet. See **Load the manuals** "
+            "in the README."
+        )
         return
 
     question = st.text_input(
@@ -589,8 +501,6 @@ def _page_ocean_data(cfg):
 
 PAGES = {
     "🏠 Home": _page_home,
-    "📤 Upload Documents": _page_upload,
-    "📚 Knowledge Base": _page_knowledge_base,
     "💬 Ask Questions": _page_ask,
     "🌊 Ocean Data": _page_ocean_data,
     "📊 Evaluation": _page_evaluation,

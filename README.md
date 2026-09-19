@@ -99,7 +99,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |
 | Agent interface | MCP server on stdio                       | four tools, none of them raw SQL  |
-| UI              | Streamlit (8 pages)                       |                                   |
+| UI              | Streamlit (6 pages)                       |                                   |
 | Evaluation      | retrieval metrics + SQL execution metrics |                                   |
 | Logging         | structured JSONL                          |                                   |
 | Config          | `config.yaml` + environment overrides     |                                   |
@@ -131,8 +131,8 @@ RAG_Assistant/
 │                    006_bgc_parameters.sql
 │                    schema_catalog.md · queries/         # 12 reference queries
 ├── scripts/         fetch_argo_index.py · load_argo_netcdf.py
-│                    load_argo.py · build_semantic_index.py
-│                    make_sample_data.py · run_ab_test.py
+│                    build_semantic_index.py · load_regions.py
+│                    run_ab_test.py
 │                    mcp/            MCP server (four tools, no raw SQL)
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
@@ -209,18 +209,6 @@ Re-running is safe: profiles already present are left alone rather than duplicat
 
 Three ARGO conventions are handled in [`src/ingestion/argo_netcdf.py`](src/ingestion/argo_netcdf.py) rather than left to the caller. Profiles in delayed or adjusted mode are read from their `*_ADJUSTED` variables, because in those modes the raw variables are kept only for provenance and reading them anyway is the most common way to get ARGO wrong. Each parameter's QC flag is stored separately, because a level can have good temperature and bad salinity. And a delayed-mode profile whose `*_ADJUSTED` variables are declared but entirely fill falls back to the raw values, because taking the adjusted pair on the strength of its existence alone yields no depth and no value at every level, and the whole profile is then dropped without a word. One float in the sample lost all 54 of its profiles that way.
 
-There is also an ERDDAP tabledap CSV loader, kept because a CSV export is often the quickest way to get a region loaded:
-
-```bash
-python scripts/load_argo.py path/to/argo_export.csv
-```
-
-Or generate synthetic ARGO-shaped data with a planted 0.02 °C/year warming signal, which is useful for checking that the trend tests detect what they should:
-
-```bash
-python scripts/make_sample_data.py
-```
-
 ### Load the manuals
 
 The document side answers questions about what the data means, so its corpus is the two documents that define that: the [Argo Quality Control Manual for CTD and Trajectory Data](https://doi.org/10.13155/33951) and the [Argo user's manual](https://doi.org/10.13155/29825). Both are public, and neither is committed here.
@@ -231,7 +219,7 @@ curl -o data/raw/manuals/argo_quality_control_manual.pdf https://archimer.ifreme
 curl -o data/raw/manuals/argo_user_manual.pdf https://archimer.ifremer.fr/doc/00187/29825/120885.pdf
 ```
 
-Then ingest them from the Upload Documents page, or:
+Then ingest them:
 
 ```python
 from src.utils.pipeline import RAGService
@@ -312,7 +300,7 @@ Two database URLs are required. `DATABASE__URL` owns the schema and runs ingesti
 streamlit run app.py
 ```
 
-Pages: Home, Upload Documents, Knowledge Base, Ask Questions, Ocean Data, Evaluation, Monitoring, Settings.
+Pages: Home, Ask Questions, Ocean Data, Evaluation, Monitoring, Settings. The document corpus is the two Argo manuals, loaded by the snippet above rather than uploaded through the UI, because the corpus is fixed rather than something a user curates.
 
 Or the HTTP service:
 
@@ -583,7 +571,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 ## Limitations
 
-**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Real QC flags arrive only through the NetCDF loader; the CSV loader still writes `qc_flag = 1` for every row, so a database built from CSV has a QC column that means nothing. Region comes from IHO basin polygons in PostGIS, with the old latitude and longitude inequalities kept as the fallback for a position inside none of the three loaded basins, which is 3% of profiles.
+**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Region comes from IHO basin polygons in PostGIS, with the old latitude and longitude inequalities kept as the fallback for a position inside none of the three loaded basins, which is 3% of profiles.
 
 **Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the Streamlit page holds it in session state, so it disappears with the browser session. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
 
@@ -619,7 +607,6 @@ Done:
 Not done, honestly:
 
 - [ ] Answer a single question from documents and data together, which is still the largest architectural gap
-- [ ] Real QC flags on the CSV loader too
 - [ ] Persist conversation history, which currently dies with the process
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
 - [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)
