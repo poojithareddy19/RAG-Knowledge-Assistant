@@ -591,7 +591,7 @@ PAGES = {
 def main() -> None:
     cfg = get_config()
 
-    st.sidebar.title("RAG Assistant")
+    st.sidebar.title("FloatChat")
 
     choice = st.sidebar.radio(
         "Navigate",
