@@ -39,6 +39,7 @@ from src.monitoring.logger import log_interaction, log_result
 from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
 from src.router.rewriter import rewrite
+from src.router.translator import from_english, to_english
 from src.semantic.index import SemanticIndex, Summary, as_context
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql
@@ -187,13 +188,23 @@ class RAGService:
         """Route, delegate and log one query exactly once.
 
         ``history`` is the recent (question, answer) pairs of this
-        conversation, oldest first. When there is any, the question is first
-        rewritten into a standalone one, and everything after this line works
-        on that rewrite alone. Nothing downstream knows a conversation exists.
+        conversation, oldest first.
+
+        Two things happen at this edge and nowhere else. A question in another
+        language is translated to English, and a follow up is rewritten into a
+        standalone question. Everything after these two lines works on one
+        English, self-contained question, so the router, the SQL generator and
+        the cache never learn that either feature exists.
+
+        Order matters: translate first, then rewrite. The history holds English
+        questions, so rewriting a Hindi follow up against English context asks
+        the model to work across two languages at once.
         """
         started = time.perf_counter()
 
         asked = question
+
+        question, language = to_english(question)
 
         if history:
             question = rewrite(question, history)
@@ -217,10 +228,17 @@ class RAGService:
         result["route"] = chosen
         result["route_decided_by"] = how
 
-        # Both, always. A bad rewrite is the most likely new failure mode and
-        # it is invisible unless the pair travels together.
+        # Both, always. A bad rewrite or a bad translation is the most likely
+        # new failure mode and it is invisible unless the pair travels together.
         result["question"] = asked
         result["question_rewritten"] = question
+        result["language"] = language
+
+        if language:
+            # The table and the SQL stay as they are; it is the sentence
+            # summarising them that gets translated back.
+            result["answer_english"] = result.get("answer")
+            result["answer"] = from_english(result.get("answer", ""), language)
 
         # Always the end-to-end wall clock. The database time, when there
         # is one, is reported separately as db_elapsed_ms.

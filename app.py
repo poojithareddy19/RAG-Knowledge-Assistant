@@ -376,8 +376,9 @@ def _page_ocean_data(cfg):
     st.caption(
         "Ask about ARGO floats and drifting buoys. The question is routed, "
         "the SQL is generated, validated and shown to you before you are "
-        "asked to believe the numbers. Follow-ups work: try \"and in 2004?\" "
-        "after asking about 2003."
+        "asked to believe the numbers. Follow-ups work, and so do other "
+        "languages: ask in Hindi, Tamil or Bengali and the answer comes back "
+        "in the same language."
     )
 
     # Two stores doing different jobs. turns is everything needed to redraw
@@ -460,8 +461,19 @@ def _render_answer(svc, question, result, position):
 
     if rewritten and rewritten != question:
         # Shown rather than hidden: if the follow up was resolved into the
-        # wrong question, this line is the only way to see it.
+        # wrong question, or the translation changed its meaning, this line is
+        # the only way to see it.
         st.caption(f"Answered as: {rewritten}")
+
+    if result.get("language"):
+        st.caption(
+            f"Detected {result['language']}. The query ran in English and the "
+            "answer was translated back."
+        )
+
+        if result.get("answer_english"):
+            with st.expander("Answer before translation"):
+                st.write(result["answer_english"])
 
     if result.get("chart_spec"):
         # A domain plot: a track, a cast, a section or a T-S cloud. Interactive,

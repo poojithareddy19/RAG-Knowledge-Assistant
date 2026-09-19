@@ -1,12 +1,12 @@
 # FloatChat
 
-Ask the Argo float archive a question in plain English and get an answer you can check.
+Ask the Argo float archive a question in your own language and get an answer you can check.
 
 Two kinds of question, one system. **What does this data mean?** is answered from the Argo manuals, with the document and page behind every claim. **What does this data say?** is answered by SQL generated against the measurements database, shown to you before you are asked to believe the numbers. A router decides which, so the user asks a question rather than choosing a tool.
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router, conversational follow-ups, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.620 execution accuracy](#results) on 52 SQL questions across two models, and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.620 execution accuracy](#results) on 52 SQL questions across two models, and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -88,7 +88,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Concern         | Choice                                    | Notes                             |
 | --------------- | ----------------------------------------- | --------------------------------- |
 | Language        | Python 3.12+                              |                                   |
-| Ocean ingestion | `xarray` + `netCDF4`                      | ARGO profile files, ERDDAP CSV    |
+| Ocean ingestion | `xarray` + `netCDF4`                      | Argo NetCDF, drifters over ERDDAP |
 | Structured data | PostgreSQL 16                             | core CTD plus five BGC parameters |
 | Vector store    | pgvector, cosine                          | FAISS backend still selectable    |
 | Embeddings      | `sentence-transformers` (BAAI/bge-small)  | swappable via config              |
@@ -276,6 +276,27 @@ What changed when the polygons replaced the inequalities, over 1,099 real profil
 | Arabian Sea | 294 | 205 |
 
 128 profiles, nearly one in eight, were in the wrong basin. The inequalities put everything north of 5N and west of 78E in the Arabian Sea, which swept in a slice of ocean the IHO does not consider part of it.
+
+### Asking in another language
+
+The problem statement comes from an Indian ministry, so the languages that matter most are Hindi, Bengali, Tamil, Telugu, Malayalam and their neighbours. Ask in any of them and the answer comes back in the same language.
+
+```
+अरब सागर में औसत सतही तापमान क्या है
+  detected   Hindi or Marathi
+  as English What is the average surface temperature of the Arabian Sea?
+  answer     5 row(s) प्राप्त होते हैं column वर्ष, क्षेत्र, mean_surface_temperature
+```
+
+Translation happens at the edge in [`src/router/translator.py`](src/router/translator.py), in front of routing and beside the follow-up rewriter. Everything inside stays English: the router, the SQL generator, the schema catalog and the SQL cache never learn that language exists, so the cache does not fragment into one entry per language for the same question.
+
+**Detection is a script test, not a model call.** A question containing Devanagari is not English and no model is needed to establish that, so an English question costs nothing at all. That is the cheap half. The honest limit is written into the module: French and Indonesian are Latin script and will be taken for English. Setting `multilingual.always_translate` routes every question through the model instead, which catches those at the cost of one call on every question.
+
+Two things are visible rather than hidden. The page shows the detected language and the English the query actually ran as, and the English answer is kept under an expander. A translation that changes the meaning of a question is the obvious new failure mode here, and it is only catchable if you can see both.
+
+Every failure degrades to the behaviour that existed before the feature: a model that times out, returns nothing, or is switched off leaves the question exactly as typed.
+
+This does not affect the [published numbers](#results). English questions skip the translator entirely and the SQL prompt is unchanged, so the 52-question benchmark measures the same system it did before.
 
 ### Load the drifting buoys
 
@@ -611,7 +632,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
-**Retrieval and generation.** Retrieval over the manuals reaches hit@5 of 0.960 on 25 questions, but that gold set was written by the same person who chose the corpus, which is the honest limit on what it shows. One question in twenty-five is still missed at k=5. No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. English-only embeddings. No individual document deletion.
+**Retrieval and generation.** Retrieval over the manuals reaches hit@5 of 0.960 on 25 questions, but that gold set was written by the same person who chose the corpus, which is the honest limit on what it shows. One question in twenty-five is still missed at k=5. No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Embeddings are English-only, so the manual retrieval path does not benefit from the translator the way the SQL path does. Language detection is by script, so a Latin-script language other than English is taken for English unless `always_translate` is set. No individual document deletion.
 
 **Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
@@ -634,6 +655,7 @@ Done:
 - [x] IHO basin polygons loaded and the existing profiles backfilled, moving 128 of 1,099 into a different basin
 - [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts, regions and export with no code changed
 - [x] A conversational thread rather than a single question box, with each turn keeping its own chart, table and SQL
+- [x] Multilingual questions, answered in the language they were asked in, with detection that costs nothing for English
 - [x] An MCP server, with no tool that accepts SQL
 - [x] Few-shot window-function examples, measured: they did not move the bucket
 - [x] A second model on the same 52 questions, which closed the refusal gap
@@ -649,5 +671,4 @@ Not done, honestly:
 - [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)
 - [ ] Hybrid search (BM25 + dense), which would likely help the exact-phrase manual questions most
 - [ ] GitHub Actions CI
-- [ ] Multilingual query support
 - [ ] OCR path for scanned PDFs

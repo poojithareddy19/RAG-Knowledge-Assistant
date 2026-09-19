@@ -65,6 +65,17 @@ router:
   # can take most of this on its own.
   gen_timeout_seconds: 120
 
+multilingual:
+  # A question in another language is translated to English at the edge and the
+  # answer translated back. Everything inside, the router, the SQL generator and
+  # the cache, stays English so nothing downstream learns about language.
+  enabled: true
+  # Detection is a script test, so an English question costs no model call.
+  # Turning this on routes every question through the translator instead, which
+  # is what catches French or Indonesian at the cost of a call per question.
+  always_translate: false
+  answer_in_source_language: true
+
 conversation:
   # A follow up is rewritten into a standalone question before routing, so the
   # router, the SQL generator and the cache all stay stateless.
