@@ -53,7 +53,7 @@ from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql
 from src.sqlgen.validator import SQLRejected, validate
 
-ALLOWED = ["floats", "profiles", "measurements"]
+ALLOWED = ["floats", "profiles", "measurements", "drifters", "drifter_observations"]
 
 PLACES = 6
 

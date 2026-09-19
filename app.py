@@ -304,7 +304,7 @@ def _page_settings(cfg):
     )
 
 
-def _download_buttons(svc, result, question):
+def _download_buttons(svc, result, question, position=0):
     """Offer the result set as CSV and as NetCDF.
 
     Both, because they answer different questions. CSV opens anywhere and
@@ -322,6 +322,7 @@ def _download_buttons(svc, result, question):
             "Download CSV",
             data=to_csv_bytes(full),
             file_name="result.csv",
+            key=f"csv_{position}",
             mime="text/csv",
             width="stretch",
         )
@@ -337,6 +338,7 @@ def _download_buttons(svc, result, question):
             "Download NetCDF",
             data=blob,
             file_name="result.nc",
+            key=f"nc_{position}",
             mime="application/x-netcdf",
             width="stretch",
         )
@@ -359,49 +361,78 @@ def _remember(cfg, history, question, answer):
 
 
 def _page_ocean_data(cfg):
-    """Display-only ocean data interface."""
+    """Conversational interface over the measurements database.
+
+    A thread rather than a single question box, because the system supports
+    follow-ups and one question-and-answer pane hides that. Each turn keeps
+    its own chart, table and SQL, so scrolling back shows what was asked and
+    what answered it rather than only the latest result.
+    """
 
     svc = get_service()
 
     st.header("🌊 Ocean Data")
 
     st.caption(
-        "Ask about ARGO measurements. The question is routed, "
-        "the SQL is generated, validated and shown to you before "
-        "you are asked to believe the numbers."
+        "Ask about ARGO floats and drifting buoys. The question is routed, "
+        "the SQL is generated, validated and shown to you before you are "
+        "asked to believe the numbers. Follow-ups work: try \"and in 2004?\" "
+        "after asking about 2003."
     )
 
-    question = st.text_input(
-        "Question",
-        placeholder=(
-            "average surface temperature per year in the Arabian Sea"
-        ),
-        key="ocean_question",
-    )
-
+    # Two stores doing different jobs. turns is everything needed to redraw
+    # the thread; history is the (question, answer) pairs the rewriter reads,
+    # capped at conversation.max_turns.
+    turns = st.session_state.setdefault("ocean_turns", [])
     history = st.session_state.setdefault("ocean_history", [])
 
-    if history and st.button("Clear conversation", key="ocean_clear"):
+    if turns and st.button("Clear conversation", key="ocean_clear"):
+        turns.clear()
         history.clear()
         st.rerun()
 
-    if not st.button("Ask", key="ocean_ask") or not question.strip():
+    for position, turn in enumerate(turns):
+        with st.chat_message("user"):
+            st.write(turn["question"])
+
+        with st.chat_message("assistant"):
+            _render_answer(svc, turn["question"], turn["result"], position)
+
+    question = st.chat_input(
+        "e.g. average surface temperature per year in the Arabian Sea"
+    )
+
+    if not question or not question.strip():
         return
 
-    with st.spinner(
-        "Routing, generating SQL, running query…"
-    ):
-        try:
-            # A copy, because the service must not see the turn being asked.
-            result = svc.answer(question, history=list(history))
-        except Exception as exc:
-            st.error(
-                f"The query could not be completed: {exc}"
-            )
-            return
+    with st.chat_message("user"):
+        st.write(question)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Routing, generating SQL, running query…"):
+            try:
+                # A copy, because the service must not see the turn being asked.
+                result = svc.answer(question, history=list(history))
+            except Exception as exc:
+                st.error(f"The query could not be completed: {exc}")
+                return
 
     _remember(cfg, history, question, result.get("answer", ""))
+    turns.append({"question": question, "result": result})
 
+    # Rerun rather than draw the answer here. The replay loop above is then the
+    # only thing that renders a turn, and a turn drawn once live and once on
+    # the next pass was appending its text to itself in the same container.
+    st.rerun()
+
+
+def _render_answer(svc, question, result, position):
+    """One assistant turn: the answer and everything backing it.
+
+    ``position`` keeps the widget keys unique. Streamlit raises on two
+    download buttons sharing a key, and a conversation is many turns each
+    offering the same two downloads.
+    """
     st.write(
         f"**Route:** `{result['route']}` "
         f"(decided by {result['route_decided_by']})"
@@ -409,7 +440,7 @@ def _page_ocean_data(cfg):
 
     if result["route"] == "documents":
         st.info(
-            "This was routed to the uploaded documents, not the database. "
+            "This was routed to the Argo manuals, not the database. "
             "Ask it on the Ask Questions page for citations and confidence."
         )
         st.write(result["answer"])
@@ -418,13 +449,8 @@ def _page_ocean_data(cfg):
     if result.get("refused"):
         st.warning(result["answer"])
 
-        with st.expander(
-            "SQL the model produced (rejected)"
-        ):
-            st.code(
-                result.get("generated_sql") or "",
-                language="sql",
-            )
+        with st.expander("SQL the model produced (rejected)"):
+            st.code(result.get("generated_sql") or "", language="sql")
 
         return
 
@@ -444,30 +470,23 @@ def _page_ocean_data(cfg):
             result["chart_spec"],
             width="stretch",
             config=PLOTLY_CONFIG,
+            key=f"chart_{position}",
         )
     elif result.get("chart_png"):
         st.image(result["chart_png"])
     elif result.get("chart_kind") == "table":
-        st.caption(
-            "This result set is not chartable, "
-            "so here is the table."
-        )
+        st.caption("This result set is not chartable, so here is the table.")
 
     if result.get("rows"):
         st.dataframe(
-            pd.DataFrame(
-                result["rows"],
-                columns=result["columns"],
-            ),
+            pd.DataFrame(result["rows"], columns=result["columns"]),
             width="stretch",
         )
 
-        _download_buttons(svc, result, question)
+        _download_buttons(svc, result, question, position)
 
     if result.get("context_used"):
-        with st.expander(
-            "What the model was told the database contains"
-        ):
+        with st.expander("What the model was told the database contains"):
             for note in result["context_used"]:
                 st.markdown(f"- {note}")
 
@@ -478,10 +497,7 @@ def _page_ocean_data(cfg):
             )
 
     with st.expander("Generated SQL and timing"):
-        st.code(
-            result["generated_sql"],
-            language="sql",
-        )
+        st.code(result["generated_sql"], language="sql")
 
         st.write(
             f"{result['row_count']} rows in "

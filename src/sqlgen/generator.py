@@ -57,7 +57,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "8"
+PROMPT_VERSION = "9"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -141,6 +141,23 @@ FROM yearly
 ORDER BY region
 """
 
+# The drifting buoys are a second platform with a different shape, and the
+# model kept reaching for the Argo habits: aliasing drifter_observations as
+# "do" (a keyword the validator rejects) and grouping by a region column on
+# drifters that does not exist, because on this platform region belongs to the
+# fix rather than to the instrument. Catalog wording did not fix either. One
+# worked example did.
+DRIFTER_EXAMPLE = """=== DRIFTING BUOY EXAMPLE ===
+Question:	Average sea surface temperature from the drifting buoys in each region
+SQL:
+SELECT o.region,
+       avg(o.sst_c) AS mean_sst
+FROM drifter_observations o
+WHERE o.sst_c IS NOT NULL
+GROUP BY o.region
+ORDER BY o.region
+"""
+
 FENCE = re.compile(
     r"```(?:sql)?(.*?)```",
     re.S | re.I,
@@ -173,6 +190,7 @@ def build_prompt(
     if include_examples:
         sections.append(TRACK_EXAMPLE)
         sections.append(WINDOW_EXAMPLES)
+        sections.append(DRIFTER_EXAMPLE)
 
     if context.strip():
         sections.append(

@@ -65,12 +65,56 @@ parameter's own flag, for example `oxygen_qc = 1`.
 ARGO quality flags: 1 good, 2 probably good, 3 probably bad, 4 bad,
 5 changed, 8 interpolated, 9 missing.
 
+## drifters
+
+Surface drifting buoys from the Global Drifter Program. A second in-situ
+platform, not Argo floats. A drifter rides the surface and reports where the
+current carried it; it has no cycles and no depth levels, so it does not join
+to `profiles` or `measurements`.
+
+- `buoy_id` (bigint, PK) - Global Drifter Program identifier
+- `wmo` (bigint) - WMO number, NULL for buoys that never got one
+- `buoy_type` (text) - hull and drogue type, for example `SVPB`
+- `first_seen`, `last_seen` (date)
+
+## drifter_observations
+
+One row per buoy per six-hour fix.
+
+- `observation_id` (bigint, PK)
+- `buoy_id` (bigint, FK -> drifters.buoy_id)
+- `obs_time` (timestamptz)
+- `latitude`, `longitude` (double)
+- `region` (text) - same three regions as `profiles`. Note it sits on the
+  observation and not on `drifters`: a buoy drifts, so it can report from
+  the Arabian Sea in March and the Southern Indian Ocean by September.
+  Group by `drifter_observations.region`, never by a region on `drifters`
+- `sst_c` (double) - sea surface temperature in degrees Celsius. This is the
+  only temperature a drifter measures, and it is at the surface, so it is
+  comparable with `measurements.temperature_c` where `pressure_dbar < 10` and
+  with nothing deeper
+- `eastward_velocity_m_s`, `northward_velocity_m_s` (double) - surface current,
+  derived from how the buoy itself moved. This is the only current speed in the
+  database, and it is at the surface only
+- `geom` (geography Point) - the position, for distance queries
+
+There is no QC flag column here: the source product is already quality
+controlled, so there is no per-row flag to filter on. Do not invent one, and do
+not apply the `qc_flag = 1` rule to this table.
+
 ## Conventions
 
 - `"surface"` means `pressure_dbar < 10`
 - `"deep"` means `pressure_dbar > 1000`
 - Always exclude rows with `temperature_c IS NULL` from averages
-- Join path: `measurements -> profiles -> floats`
+- Join path for Argo: `measurements -> profiles -> floats`
+- Join path for buoys: `drifter_observations -> drifters`
+- The two platforms do not join to each other. A question comparing them is
+  answered by aggregating each separately, for example with two CTEs, because
+  a float profile and a buoy fix have no shared key
+- `qc_flag = 1` applies to `measurements` only, never to `drifter_observations`
+- Alias `drifter_observations` as `obs` and `drifters` as `d`. Do not alias it
+  as `do`: that is a PostgreSQL keyword and the validator rejects the query
 - For yearly aggregates use `date_trunc('year', obs_time)`
 - Prefer `qc_flag = 1`. Fall back to `temperature_qc = 1` only when the
   question is about temperature alone

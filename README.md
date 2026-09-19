@@ -277,6 +277,27 @@ What changed when the polygons replaced the inequalities, over 1,099 real profil
 
 128 profiles, nearly one in eight, were in the wrong basin. The inequalities put everything north of 5N and west of 78E in the Arabian Sea, which swept in a slice of ocean the IHO does not consider part of it.
 
+### Load the drifting buoys
+
+The second in-situ platform, and the point at which "extensible to other observations" stops being a claim. Argo floats profile the water column and surface every ten days; drifters ride the surface and report where the current carried them. Same ocean, different instrument, different table shape.
+
+```bash
+python scripts/load_drifters.py --year 2023
+```
+
+Source is the Global Drifter Program 6-hourly quality controlled product, served by [Ifremer's ERDDAP](https://erddap.ifremer.fr/erddap/). Public, no key, cached under `data/raw/drifters/` after the first run. The Indian Ocean box is the same one the Argo selection uses, so the two platforms describe the same water.
+
+They get their own tables ([`db/008_drifters.sql`](db/008_drifters.sql)) rather than being forced into `profiles` and `measurements`. A drifter has no cycle, no depth levels and no descent, and pretending otherwise would put NULLs down every column that makes a profile a profile. What they share is what questions are asked in: a position, a time, a region and a temperature.
+
+What that shared shape bought, with no code changed:
+
+- the trajectory chart draws a buoy track exactly as it draws a float track
+- `region` grouping works across both, from the same basin polygons
+- `ST_DWithin` distance queries work on both, from the same geography column
+- CSV and NetCDF export work on both
+
+What it cost is in [Results](#results), and it is not nothing.
+
 ### Build the semantic layer
 
 The summaries describe what is in the tables, so they are stale the moment new profiles land. Rebuild them after any load:
@@ -468,6 +489,19 @@ llama3.1 is the mean of two runs, qwen a single run. Both were measured before t
 
 Neither model is simply better. qwen is worse overall, much worse on the simple buckets, clearly better on grouped aggregates, and perfect at refusing. Picking one is a trade, not an upgrade.
 
+#### What adding a second platform cost
+
+The drifting buoys were added after the table above was measured, which changed the prompt and the schema the model sees. Re-running the same 52 questions on `llama3.1:8b` afterwards:
+
+| | Before drifters | After drifters |
+| --- | --- | --- |
+| Execution accuracy | 0.620 | 0.609 |
+| **Correct refusal rate** | **0.833 (5/6)** | **0.667 (4/6)** |
+
+Accuracy is flat, inside the run-to-run spread. The refusal rate is not, and the cause is specific: drifters carry surface current velocities, so the database now contains a current speed for the first time. Asked "what is the current speed at 1000 decibars", the model stops refusing and answers, because something called current now exists. It is still wrong, since a drifter measures the surface and nothing else, and the catalog says so in the sentence directly under the column.
+
+**Adding a data source widened the hallucination surface.** That is the honest cost of the extension, in the one metric this project claims to care most about, and prompt wording did not close it. It belongs next to the feature rather than in a footnote.
+
 #### Did the worked examples move the window bucket?
 
 No.
@@ -598,6 +632,8 @@ Done:
 - [x] CSV and NetCDF export, with units and the generating query attached
 - [x] PostGIS geometry on profiles, with a spatial region lookup and `ST_DWithin` distance queries
 - [x] IHO basin polygons loaded and the existing profiles backfilled, moving 128 of 1,099 into a different basin
+- [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts, regions and export with no code changed
+- [x] A conversational thread rather than a single question box, with each turn keeping its own chart, table and SQL
 - [x] An MCP server, with no tool that accepts SQL
 - [x] Few-shot window-function examples, measured: they did not move the bucket
 - [x] A second model on the same 52 questions, which closed the refusal gap
@@ -607,6 +643,7 @@ Done:
 Not done, honestly:
 
 - [ ] Answer a single question from documents and data together, which is still the largest architectural gap
+- [ ] Close the refusal the drifters reopened: a surface current is not a current at 1000 decibars
 - [ ] Persist conversation history, which currently dies with the process
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
 - [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)

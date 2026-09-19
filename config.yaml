@@ -79,6 +79,10 @@ sql:
     - floats
     - profiles
     - measurements
+    # The second in-situ platform. Listed here so generated SQL may read the
+    # drifting buoys, and so the validator rejects anything else as before.
+    - drifters
+    - drifter_observations
   model: "llama3.1:latest"
   default_limit: 500
   max_rows: 5000
