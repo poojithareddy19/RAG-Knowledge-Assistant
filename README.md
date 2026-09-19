@@ -4,7 +4,7 @@ Natural-language questions answered from two kinds of source, with the evidence 
 
 Built around one constraint: being confidently wrong is worse than saying nothing. Document answers cite the document, page and passage behind every claim and decline when the evidence is thin. Data answers show the exact SQL that produced the table, and that SQL runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and a 52-question text-to-SQL benchmark scoring [0.652 execution accuracy](#results) against real Argo GDAC profiles. The largest remaining gap is that a single question is answered from documents or data but never both. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of ARGO profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, document RAG with citations and refusal, text-to-SQL with a four-layer safety path, a query router, automatic charts, a Streamlit dashboard, a FastAPI service, and and a 52-question text-to-SQL benchmark scored against real Argo GDAC profiles on [two models](#results), 0.620 and 0.522 execution accuracy. The largest remaining gap is that a single question is answered from documents or data but never both. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -348,42 +348,78 @@ summaries, buckets, detail = evaluate_runs(runs=3)
 
 ### Results
 
-52 questions, `llama3.1:8b` via Ollama, against **real Argo GDAC profiles**: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean, spanning 2001-07-24 to 2025-10-05 across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading. Three runs, reported as mean and standard deviation.
+52 questions against **real Argo GDAC profiles**: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean, spanning 2001-07-24 to 2025-10-05 across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading.
 
-| Metric | Value |
-| ------------------------- | ----- |
-| **Execution accuracy**    | **0.652 +/- 0.000** |
-| Validation pass rate      | 1.000 +/- 0.000 |
-| Execution rate            | 0.957 +/- 0.000 |
-| Correct refusal rate      | 0.833 +/- 0.000 |
-| False refusal rate        | 0.000 +/- 0.000 |
-| Median latency            | 34.8 s +/- 1.6 |
-| p95 latency               | 55.7 s +/- 1.4 |
+Two models, both local through Ollama, on the same questions and the same prompt. `llama3.1:8b` is the default the system ships with; `qwen2.5-coder:7b` is a code specialist, run to find out whether the two ceilings this benchmark keeps hitting are the model's or the prompt's.
 
-| Bucket | Questions | Execution accuracy |
-| ------------ | --- | ----- |
-| easy         | 8   | 1.000 +/- 0.000 |
-| filter       | 8   | 1.000 +/- 0.000 |
-| join         | 8   | 0.625 +/- 0.000 |
-| qc           | 5   | 0.600 +/- 0.000 |
-| bgc          | 5   | 0.400 +/- 0.000 |
-| groupby      | 6   | 0.333 +/- 0.000 |
-| window       | 6   | 0.333 +/- 0.000 |
-| unanswerable | 6   | 5/6 refused |
+| Metric | `llama3.1:8b` | `qwen2.5-coder:7b` |
+| ------------------------- | ----- | ----- |
+| **Execution accuracy**    | **0.620 +/- 0.015** | **0.522** |
+| Validation pass rate      | 1.000 | 1.000 |
+| Execution rate            | 0.957 | 0.891 |
+| **Correct refusal rate**  | 0.833 (5/6) | **1.000 (6/6)** |
+| False refusal rate        | 0.000 | 0.000 |
+| Median latency            | 37.7 s | 46.5 s |
 
-**Every standard deviation is zero, and that is a result rather than a formatting artefact.** Temperature is 0, and across three runs the model produced byte-identical SQL for all 52 questions. What proves the model was actually re-queried rather than served from cache is that median latency moved between runs: 33.0 s, 36.2 s, 35.2 s. For this model on this gold set a single run is as informative as three, which is worth knowing before anyone reads a two-point difference as an improvement. That will stop being true with a sampled model, and the harness keeps `--runs` for then.
+| Bucket | Questions | `llama3.1:8b` | `qwen2.5-coder:7b` |
+| ------------ | --- | ----- | ----- |
+| filter       | 8   | 1.000 | 0.625 |
+| easy         | 8   | 0.938 | 0.625 |
+| groupby      | 6   | 0.500 | **0.833** |
+| join         | 8   | 0.500 | 0.500 |
+| qc           | 5   | 0.400 | 0.400 |
+| bgc          | 5   | 0.400 | 0.200 |
+| window       | 6   | 0.333 | 0.333 |
+| unanswerable | 6   | 5/6 refused | **6/6 refused** |
 
-Accuracy still falls as query complexity rises. Single-table aggregates and filters are perfect, joins are middling, and everything that needs a window function or a multi-level grouping is roughly one in three.
+llama3.1 is the mean of two runs, qwen a single run. Quantisation differs and is worth stating: llama3.1 is Q4_K_M, qwen is `7b-instruct-q3_K_M`, one step lower, because the larger file would not fit on the disk it was run from. Some of qwen's weakness on the easy buckets plausibly belongs to that rather than to the model.
 
-Validation pass rate is 1.000 while accuracy is 0.652. Every generated query was well formed, safe and executable, and a third still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
+Neither model is simply better. qwen is worse overall, much worse on the simple buckets, clearly better on grouped aggregates, and perfect at refusing. Picking one is a trade, not an upgrade.
 
-**The one refusal that failed is still the most serious result here.** Asked for the seafloor depth beneath each float, the model answered `MAX(m.pressure_dbar) AS seafloor_depth`: the deepest a float descended, renamed to the thing that was asked for. A float profiles to around 2000 decibars over a seabed often three times deeper, so the query is not merely wrong, it looks entirely reasonable. Five of six unanswerable questions were refused, but a single fabricated query matters more than a point of accuracy in a system whose premise is declining rather than guessing.
+#### Did the worked examples move the window bucket?
 
-Three prompt fixes were tried and measured. Telling the model what the schema does not contain, and instructing it to refuse a quantity with no column, both stop the fabrication and both make it refuse legitimate questions instead: the deepest recorded pressure, the average pH, the average dissolved oxygen. Trading three false refusals for one caught fabrication is a worse system, and `false_refusal_rate` is otherwise a clean 0.000. What shipped is the version that keeps every real question working: the catalog now says plainly that `pressure_dbar` is how deep the float went and not where the seabed is, and the instructions forbid aliasing a column to a name that means something else. That is not enough to stop it. **This one needs a more capable model rather than better wording.**
+No.
+
+Three worked examples were added to the prompt, one each for `lag`, `rank` and `first_value`, written against these exact tables and column names. The bucket did not move:
+
+| | Execution accuracy, window bucket |
+| --- | --- |
+| llama3.1, before the examples | 0.333 (2/6) |
+| llama3.1, after the examples  | 0.333 (2/6), in both runs |
+| qwen2.5-coder, with the examples | 0.333 (2/6) |
+
+The same two questions pass and the same four fail, and "year over year change in mean surface temperature" still fails for llama3.1 despite a near-identical `lag` example sitting in its prompt. qwen gets that one right and loses the running total instead, so the two models fail on different questions and arrive at the same score.
+
+Overall accuracy for llama3.1 went **down** slightly after the examples, 0.652 to 0.620, driven by `join` and `qc` rather than by anything the examples touched. A longer prompt is not free. The honest reading is that few-shot examples did not address this ceiling, and the extra prompt length cost a little elsewhere. They are kept because they are correct and because removing them would leave the comparison unmeasured, not because they helped.
+
+#### The seafloor question, on a second model
+
+This is the one result where the second model settles something.
+
+Asked for the seafloor depth beneath each float, `llama3.1:8b` answers `MAX(m.pressure_dbar) AS seafloor_depth`: the deepest the float descended, renamed to the thing that was asked for. A float profiles to around 2000 decibars over a seabed often three times deeper, so the query is not merely wrong, it looks entirely reasonable. It has done this in every run recorded here, before and after the catalog was reworded to say plainly that `pressure_dbar` is not the depth of the seabed.
+
+`qwen2.5-coder:7b` refuses it, and refuses the other five unanswerable questions too, at a false refusal rate of 0.000. Its answer is exactly `UNANSWERABLE`.
+
+So the earlier conclusion holds and now has evidence behind it: **that fabrication was a model limitation, not a wording problem.** Three prompt fixes were tried against it and each traded the caught fabrication for several refusals of legitimate questions, which is a worse system. A different model fixed it for free. What that costs is 0.098 of execution accuracy elsewhere, which is the shape of the choice rather than a reason to dismiss it.
+
+Validation pass rate is 1.000 for both models while accuracy is 0.620 and 0.522. Every generated query was well formed, safe and executable, and a third to a half still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
+
+#### On repeated runs
+
+The three-run evaluation on the previous prompt produced byte-identical SQL for all 52 questions and an identical score in all three runs, which is what temperature 0 should do. It is not an absolute guarantee: on the current prompt, two full runs agreed on 51 of 52 verdicts, with one `easy` question flipping. So the spread quoted above is real but small, and a difference of a point or two between configurations is not evidence of anything.
+
+Reproducing either column:
+
+```bash
+python -m src.evaluation.sql_metrics --runs 2
+python -m src.evaluation.sql_metrics --model qwen2.5-coder:7b-instruct-q3_K_M
+```
+
+The `model` is recorded on every row of the output, so two models' results can be concatenated and grouped without a run header to keep track of.
 
 #### What changed when the data became real
 
-The same gold set scored 0.739 against 40 synthetic floats. The two figures are not comparable, because the data and six of the questions both changed, but the per-bucket movement says where the difference came from.
+The same gold set scored 0.739 against 40 synthetic floats. The two figures are not comparable, because the data and six of the questions both changed, but the per-bucket movement says where the difference came from. Both columns below are `llama3.1:8b` before the window examples were added, so this is a comparison of data rather than of prompts.
 
 | Bucket | Synthetic | Real | |
 | ------- | ----- | ----- | --- |
@@ -453,7 +489,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Charts.** Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
-**Evaluation.** Text-to-SQL scores 0.652 execution accuracy over three runs against real data, and complex queries are much worse than that average suggests: window functions and multi-level groupings are both 1 in 3. One unanswerable question in six still gets a fabricated query rather than a refusal. The set has only ever been run against one model, so nothing separates this model's ceiling from the prompt's. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.620 execution accuracy on the shipped model and 0.522 on a second one, and complex queries are much worse than either average suggests: the window bucket is 1 in 3 on both, and three worked examples aimed squarely at it moved nothing. The shipped model still fabricates a seafloor depth rather than refusing; the second model refuses it and pays for that elsewhere. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 

@@ -121,12 +121,20 @@ def evaluate_one(
     include_examples=True,
     use_cache=False,
     use_semantic=True,
+    model=None,
 ):
-    """Generate, validate, execute and compare one question."""
+    """Generate, validate, execute and compare one question.
+
+    ``model`` names the model to generate with, defaulting to whatever the
+    environment selects. It is recorded on the row rather than only in a run
+    header, because the point of the flag is to put two models side by side in
+    one file and a header cannot survive a concatenation.
+    """
     started = time.perf_counter()
 
     record = {
         "question": question,
+        "model": model or _default_model(),
         "validated": False,
         "executed": False,
         "matched": False,
@@ -143,6 +151,7 @@ def evaluate_one(
 
         raw = generate_sql(
             question,
+            model=model,
             include_examples=include_examples,
             use_cache=use_cache,
             context=context,
@@ -198,6 +207,7 @@ def evaluate_file(
     use_cache=False,
     use_semantic=True,
     progress=None,
+    model=None,
 ):
     """Score every question in the gold set.
 
@@ -216,6 +226,7 @@ def evaluate_file(
             include_examples=include_examples,
             use_cache=use_cache,
             use_semantic=use_semantic,
+            model=model,
         )
 
         record["bucket"] = row.get("bucket", "unknown")
@@ -231,6 +242,7 @@ def evaluate_file(
     unanswerable = df[df["bucket"] == "unanswerable"]
 
     summary = {
+        "model": model or _default_model(),
         "n": len(df),
         "n_answerable": len(answerable),
         # The headline number: right answer, not merely a query that ran.
@@ -259,6 +271,13 @@ def evaluate_file(
     return summary, by_bucket, df
 
 
+def _default_model() -> str:
+    """Whatever the generator would pick if nobody named a model."""
+    import os
+
+    return os.environ.get("GENERATION__MODEL", "llama3.1:latest")
+
+
 def _rate(series):
     return round(float(series.mean()), 3) if len(series) else None
 
@@ -270,6 +289,7 @@ def evaluate_runs(
     use_cache=False,
     use_semantic=True,
     progress=None,
+    model=None,
 ):
     """Score the gold set ``runs`` times and keep every run's numbers.
 
@@ -293,6 +313,7 @@ def evaluate_runs(
             use_cache=use_cache,
             use_semantic=use_semantic,
             progress=progress,
+            model=model,
         )
 
         summary["run"] = run
@@ -329,7 +350,7 @@ def summarise_runs(summaries) -> dict[str, tuple[float | None, float | None]]:
     if not summaries:
         return {}
 
-    keys = [key for key in summaries[0] if key != "run"]
+    keys = [key for key in summaries[0] if key not in ("run", "model")]
 
     return {
         key: mean_sd([summary.get(key) for summary in summaries])
@@ -401,6 +422,11 @@ def main(argv=None) -> int:
         help="where to write the per question detail",
     )
     parser.add_argument(
+        "--model",
+        default=None,
+        help="generate with this model instead of the configured one",
+    )
+    parser.add_argument(
         "--cache",
         action="store_true",
         help="reuse cached SQL, which makes an interrupted single run resumable",
@@ -421,7 +447,11 @@ def main(argv=None) -> int:
         path=args.questions,
         use_cache=use_cache,
         progress=_print_progress,
+        model=args.model,
     )
+
+    print()
+    print(f"model: {summaries[0]['model']}")
 
     print()
 

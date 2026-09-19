@@ -11,7 +11,6 @@ import httpx
 from src.sqlgen.schema_context import build_context
 from src.utils import cache
 
-
 SYSTEM = """You write PostgreSQL SELECT queries.
 
 Rules:
@@ -58,7 +57,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "7"
+PROMPT_VERSION = "8"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -72,6 +71,74 @@ SELECT float_id,
 FROM profiles
 WHERE float_id = 1900083
 ORDER BY obs_time
+"""
+
+# The window bucket was the worst on the board, 1 in 3, and the failures were
+# not arithmetic: the model reached for a subquery and a self join where a
+# window function was wanted, or wrote one without the OVER clause. Three
+# worked examples, one per function, against these tables and these column
+# names. Whether this moves the bucket is measured, not assumed, and the
+# before and after are both published in the README.
+WINDOW_EXAMPLES = """=== WINDOW FUNCTION EXAMPLES ===
+Question:\tYear over year change in mean surface temperature
+SQL:
+WITH yearly AS (
+    SELECT date_trunc('year', p.obs_time) AS yr,
+           avg(m.temperature_c) AS mean_temp
+    FROM measurements m
+    JOIN profiles p ON p.profile_id = m.profile_id
+    WHERE m.pressure_dbar < 10
+      AND m.qc_flag = 1
+      AND m.temperature_c IS NOT NULL
+    GROUP BY yr
+)
+SELECT yr,
+       mean_temp - lag(mean_temp) OVER (ORDER BY yr) AS change
+FROM yearly
+ORDER BY yr
+
+Question:\tRank the regions by mean surface temperature
+SQL:
+WITH regional AS (
+    SELECT p.region,
+           avg(m.temperature_c) AS mean_temp
+    FROM measurements m
+    JOIN profiles p ON p.profile_id = m.profile_id
+    WHERE m.pressure_dbar < 10
+      AND m.qc_flag = 1
+      AND m.temperature_c IS NOT NULL
+    GROUP BY p.region
+)
+SELECT region,
+       mean_temp,
+       rank() OVER (ORDER BY mean_temp DESC) AS temperature_rank
+FROM regional
+ORDER BY temperature_rank
+
+Question:\tFirst and last yearly mean surface temperature for each region
+SQL:
+WITH yearly AS (
+    SELECT p.region,
+           date_trunc('year', p.obs_time) AS yr,
+           avg(m.temperature_c) AS mean_temp
+    FROM measurements m
+    JOIN profiles p ON p.profile_id = m.profile_id
+    WHERE m.pressure_dbar < 10
+      AND m.qc_flag = 1
+      AND m.temperature_c IS NOT NULL
+    GROUP BY p.region, yr
+)
+SELECT DISTINCT
+       region,
+       first_value(mean_temp) OVER (
+           PARTITION BY region ORDER BY yr
+       ) AS first_year_temp,
+       last_value(mean_temp) OVER (
+           PARTITION BY region ORDER BY yr
+           ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+       ) AS last_year_temp
+FROM yearly
+ORDER BY region
 """
 
 FENCE = re.compile(
@@ -105,6 +172,7 @@ def build_prompt(
 
     if include_examples:
         sections.append(TRACK_EXAMPLE)
+        sections.append(WINDOW_EXAMPLES)
 
     if context.strip():
         sections.append(
