@@ -1,5 +1,4 @@
-from dotenv import load_dotenv
-load_dotenv()
+"""Count measurements per region, to check a region backfill landed."""
 
 from src.utils.db import fetch_all
 

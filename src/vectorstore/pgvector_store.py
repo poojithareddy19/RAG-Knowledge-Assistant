@@ -13,7 +13,6 @@ import numpy as np
 from src.utils.db import cursor
 from src.utils.schemas import Chunk, RetrievedChunk
 
-
 _CHUNK_N = re.compile(r"::c(\d+)$")
 
 

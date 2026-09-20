@@ -6,7 +6,6 @@ import pandas as pd
 
 from src.utils.db import fetch_all
 
-
 MONTHLY = """
 SELECT
     date_trunc('month', p.obs_time)::date AS month,

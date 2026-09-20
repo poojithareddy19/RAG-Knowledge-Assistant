@@ -15,7 +15,6 @@ from typing import Any
 from src.utils.config import get_config
 from src.utils.schemas import Answer
 
-
 _configured = False
 
 

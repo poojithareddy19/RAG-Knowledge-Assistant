@@ -1,13 +1,11 @@
 """Cluster ocean profiles into data-driven water-mass groups."""
 
-import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
 from src.utils.db import fetch_all
-
 
 PROFILE_FEATURES = """
 SELECT

@@ -1,7 +1,5 @@
 """Trend detection on regional time series. Inference, not prediction."""
 
-import time
-
 import numpy as np
 from scipy import stats
 

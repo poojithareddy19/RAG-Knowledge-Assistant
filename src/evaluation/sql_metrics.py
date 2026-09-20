@@ -66,10 +66,10 @@ def _cell(value, places=PLACES):
     if isinstance(value, bool):
         return value
 
-    if isinstance(value, (int, float, Decimal)):
+    if isinstance(value, int | float | Decimal):
         return round(float(value), places)
 
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime | date):
         return value.isoformat()
 
     return str(value)
