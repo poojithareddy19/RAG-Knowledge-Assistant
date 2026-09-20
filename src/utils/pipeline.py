@@ -33,11 +33,13 @@ from src.charts.builder import render, to_frame
 from src.charts.ocean import pick_ocean_chart, render_ocean
 from src.embeddings.embedding_model import get_embedding_model
 from src.generation.answer_generator import AnswerGenerator
+from src.generation.synthesis import combine
 from src.ingestion.chunker import chunk_segments
 from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
 from src.monitoring.logger import log_interaction, log_result
 from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
+from src.router.planner import split
 from src.router.rewriter import rewrite
 from src.router.translator import from_english, to_english
 from src.semantic.index import SemanticIndex, Summary, as_context
@@ -219,6 +221,10 @@ class RAGService:
             result = self.answer_from_documents(
                 question
             )
+        elif chosen == "both":
+            result = self.answer_from_both(
+                question
+            )
         else:
             result = self.answer_from_data(
                 question,
@@ -312,6 +318,95 @@ class RAGService:
         ]
 
         return result
+
+    def answer_from_both(
+        self,
+        question: str,
+    ) -> dict:
+        """Answer from the manuals and the database in one reply.
+
+        The question is split first, because each backend does better on its
+        own half than on the compound question: the counting clause is noise in
+        a retrieval embedding, and the manual clause invites SQL against a
+        table that does not exist.
+
+        Both halves run whatever the other does. A half that refuses is not an
+        error here, it is one source having nothing to say, and the answer is
+        then written from the half that does. Only the case where neither half
+        answers is a refusal.
+
+        The two results travel back intact under ``parts``. The synthesised
+        sentence is a convenience laid over them, and a reader who distrusts it
+        has to be able to see exactly what each backend returned.
+        """
+        doc_question, data_question = split(question)
+
+        documents = self.answer_from_documents(doc_question)
+
+        # No chart: the combined answer is prose about a manual and a number,
+        # and a chart of the data half alone would be captioned with a question
+        # it does not answer.
+        data = self.answer_from_data(data_question, want_chart=False)
+
+        doc_text = documents["answer"] if documents.get("answered") else ""
+        data_text = data["answer"] if data.get("answered") else ""
+
+        text, how = combine(
+            question,
+            doc_text,
+            data_text,
+            data.get("columns"),
+            data.get("rows"),
+        )
+
+        answered = bool(documents.get("answered") or data.get("answered"))
+
+        if not answered:
+            text = (
+                "I could not answer this from the manuals or from the "
+                "measurements database. "
+                f"The manuals: {documents.get('answer', '')} "
+                f"The database: {data.get('answer', '')}"
+            )
+
+        return {
+            "answer": text,
+            "answered": answered,
+            "refused": not answered,
+            # As good as the weaker half, since the answer leans on both.
+            "confidence": self._combined_confidence(documents, data),
+            "combined_by": how,
+            "question_documents": doc_question,
+            "question_data": data_question,
+            "sources": documents.get("sources", []),
+            "generated_sql": data.get("generated_sql"),
+            "sql_cached": data.get("sql_cached", False),
+            "columns": data.get("columns"),
+            "rows": data.get("rows"),
+            "row_count": data.get("row_count"),
+            "db_elapsed_ms": data.get("db_elapsed_ms"),
+            "context_used": data.get("context_used", []),
+            "parts": {
+                "documents": documents,
+                "data": data,
+            },
+        }
+
+    @staticmethod
+    def _combined_confidence(documents: dict, data: dict) -> float:
+        """The lower of the two halves that actually answered.
+
+        An answer resting on a confident manual passage and an empty query is
+        not a confident answer, so the minimum is the honest number. When only
+        one half answered, that half's confidence is the whole story.
+        """
+        scores = [
+            float(part.get("confidence") or 0.0)
+            for part in (documents, data)
+            if part.get("answered")
+        ]
+
+        return min(scores) if scores else 0.0
 
     def _query_data(
         self,

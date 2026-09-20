@@ -4,7 +4,7 @@ import re
 
 import httpx
 
-ROUTES = ("documents", "data", "chart")
+ROUTES = ("documents", "data", "chart", "both")
 
 
 SYSTEM = """Classify the user's question into exactly one route.
@@ -13,6 +13,11 @@ documents - answered from uploaded text documents (policies, manuals, reports)
 data - answered by querying the ocean measurements database (numbers,
        averages, counts, trends over time)
 chart - the user explicitly wants a plot, chart, graph or visualisation
+both - needs the manuals AND the database to be answered completely, such as
+       a question asking what a term means and then for a count of it
+
+Pick "both" only when neither half alone answers the question. A question
+answerable from the database alone is "data" even if it mentions a manual.
 
 Reply with JSON only: {"route": "...", "reason": "..."}
 """
@@ -36,16 +41,42 @@ DATA_WORDS = re.compile(
 )
 
 
+# What names a written source rather than a measurement. "section" is here
+# for a numbered section of a manual, which is why the chart test runs first:
+# a depth-time section is a picture and matches CHART_WORDS on its verb.
+DOC_WORDS = re.compile(
+    r"\b(policy|document|handbook|contract|clause|section"
+    r"|manual|guideline|glossary|specification"
+    r"|according to|say about|defines?|definition|defined)\b",
+    re.I,
+)
+
+
+# A question naming a manual and a measurement in one breath is usually
+# still one question: "what does the manual say about temperature limits"
+# needs no database. What makes it two is asking for a quantity as well,
+# so the combined route keys off the counting words rather than the nouns.
+AGGREGATION_WORDS = re.compile(
+    r"\b(average|mean|median|count|how many|how much|total"
+    r"|per year|per month|trend|maximum|minimum|highest|lowest)\b",
+    re.I,
+)
+
+
 def rule_route(question):
     """Fast, free, handles the unambiguous cases. None means 'ask the model'."""
     if CHART_WORDS.search(question):
         return "chart"
 
-    if DATA_WORDS.search(question) and not re.search(
-        r"\b(policy|document|handbook|contract|clause|section)\b",
-        question,
-        re.I,
-    ):
+    documents = DOC_WORDS.search(question)
+    data = DATA_WORDS.search(question)
+
+    # Naming a written source and asking for a number is the shape of a
+    # question that neither half answers on its own.
+    if documents and AGGREGATION_WORDS.search(question):
+        return "both"
+
+    if data and not documents:
         return "data"
 
     return None
