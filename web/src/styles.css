@@ -1,0 +1,103 @@
+:root {
+  --ink: #16202c;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --bg: #ffffff;
+  --panel: #f8fafc;
+  --accent: #0e7490;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.app { max-width: 860px; margin: 0 auto; padding: 32px 20px 120px; }
+
+h1 { margin: 0; font-size: 34px; letter-spacing: -0.5px; }
+.tagline { margin: 6px 0 0; color: var(--muted); }
+.status { margin-top: 4px; font-size: 14px; }
+.muted { color: var(--muted); font-size: 14px; }
+
+.examples { margin: 28px 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.example {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 15px; cursor: pointer; font: inherit; font-size: 14px; text-align: left;
+}
+.example:hover { border-color: var(--accent); color: var(--accent); }
+
+.turn { border-top: 1px solid var(--line); padding: 22px 0; }
+.question { font-weight: 600; margin: 0 0 12px; }
+.answer { margin: 10px 0; white-space: pre-wrap; }
+
+.route { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.badge {
+  font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.4px; padding: 2px 9px; border-radius: 4px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.badge-data { color: var(--accent); border-color: var(--accent); }
+.badge-documents { color: #7c3aed; border-color: #7c3aed; }
+.badge-both { color: #be185d; border-color: #be185d; }
+
+/* A refusal is a result. Warm rather than red: the system declining is
+   working as intended, not erroring. */
+.refusal {
+  background: var(--warn-bg); border-left: 3px solid var(--warn);
+  padding: 12px 14px; margin: 10px 0; border-radius: 0 4px 4px 0;
+}
+.error { color: #b91c1c; background: #fef2f2; padding: 10px 12px; border-radius: 4px; }
+
+.disclose {
+  background: none; border: none; padding: 0; margin: 10px 0 4px;
+  font: inherit; font-size: 14px; color: var(--accent); cursor: pointer;
+}
+.sql pre {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 12px 14px; overflow-x: auto; font-size: 13px; margin: 4px 0 0;
+}
+
+.table-wrap { overflow-x: auto; margin: 12px 0; }
+table { border-collapse: collapse; font-size: 14px; width: 100%; }
+th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+th { background: var(--panel); font-weight: 600; }
+
+.citations h4 { margin: 18px 0 6px; font-size: 15px; }
+.citations ol { margin: 0; padding-left: 20px; }
+.citations li { margin-bottom: 10px; }
+.doc { font-weight: 600; font-size: 14px; }
+.passage { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
+
+.meta { margin-top: 14px; }
+.thinking { padding: 16px 0; }
+
+form {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--bg); border-top: 1px solid var(--line);
+  padding: 14px 20px; display: flex; gap: 10px;
+  max-width: 860px; margin: 0 auto;
+}
+input {
+  flex: 1; padding: 11px 14px; font: inherit;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+form button {
+  padding: 11px 22px; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--accent); color: white; border: none; border-radius: 8px;
+}
+form button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e2e8f0; --muted: #94a3b8; --line: #1e293b;
+    --bg: #0b1220; --panel: #111c2e; --accent: #22d3ee;
+    --warn: #fbbf24; --warn-bg: #1c1917;
+  }
+}
