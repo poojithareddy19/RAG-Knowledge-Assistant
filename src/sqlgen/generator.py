@@ -58,7 +58,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "10"
+PROMPT_VERSION = "11"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -194,6 +194,22 @@ def _clean(text: str) -> str:
     return text.strip().rstrip(";").strip()
 
 
+# Wide on purpose. A false positive costs a longer prompt on one question; a
+# false negative costs the buoy question the example was written to fix.
+# "current" is left deliberately loose here, unlike in the scope gate, because
+# including an extra example for "the current year" is harmless.
+_DRIFTER_TOPIC = re.compile(
+    r"\bdrift|\bbuoy|\bcurrent|\bvelocit|\bsst\b|\bsea surface\b",
+    re.I,
+)
+
+
+def drifter_example_applies(question: str) -> bool:
+    """Whether this question should be shown the drifting buoy examples."""
+
+    return bool(_DRIFTER_TOPIC.search(question or ""))
+
+
 def build_prompt(
     question: str,
     context: str = "",
@@ -209,7 +225,14 @@ def build_prompt(
     if include_examples:
         sections.append(TRACK_EXAMPLE)
         sections.append(WINDOW_EXAMPLES)
-        sections.append(DRIFTER_EXAMPLE)
+
+        # Only questions that could plausibly be about the buoys pay for the
+        # buoy examples. Every example is a pattern the model can match, and
+        # the two here are the only ones naming a table most questions must
+        # not go near: an Argo question that reaches for drifter_observations
+        # is answering from the wrong platform entirely.
+        if drifter_example_applies(question):
+            sections.append(DRIFTER_EXAMPLE)
 
     if context.strip():
         sections.append(
@@ -235,9 +258,17 @@ def cache_version(
     the biogeochemical columns to the catalog changed what the model was told
     and left every cached entry looking valid, so the cache would have served
     SQL written by a model that had never heard of those columns.
+
+    The empty question here means the drifter examples, which only some
+    questions are shown, would fall out of the digest and stop invalidating
+    anything when edited. They are appended explicitly so the one rule above
+    still holds for every section of the prompt, whoever sees it.
     """
     digest = hashlib.sha256(
-        build_prompt("", context, include_examples).encode()
+        (
+            build_prompt("", context, include_examples)
+            + (DRIFTER_EXAMPLE if include_examples else "")
+        ).encode()
     ).hexdigest()[:12]
 
     return f"{PROMPT_VERSION}:{digest}"
