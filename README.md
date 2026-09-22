@@ -6,7 +6,7 @@ Two kinds of question, one system. **What does this data mean?** is answered fro
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.587 execution accuracy](#results) on 52 SQL questions, [6/6 correct refusals](#closing-it-without-the-model) with no false refusal from the scope gate, and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.533 execution accuracy](#results) on 67 SQL questions covering both platforms, [6/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -517,45 +517,54 @@ summaries, buckets, detail = evaluate_runs(runs=3)
 
 ### Results
 
-52 questions against **real Argo GDAC profiles**: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean, spanning 2001-07-24 to 2025-10-05 across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading.
+67 questions against **real data from both platforms**: 80 Argo floats, 1,099 profiles and 175,364 measurements from the Indian Ocean spanning 2001-07-24 to 2025-10-05, and 187 drifting buoys with 139,971 six-hourly fixes through 2023, across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading.
+
+The set was 52 questions and entirely Argo until the `drifter` bucket was added. Every figure below is the larger set, so it is not comparable line by line with the 0.620 and 0.587 quoted elsewhere in this README, which were measured on the 52.
 
 Two models, both local through Ollama, on the same questions and the same prompt. `llama3.1:8b` is the default the system ships with; `qwen2.5-coder:7b` is a code specialist, run to find out whether the two ceilings this benchmark keeps hitting are the model's or the prompt's.
 
 | Metric | `llama3.1:8b` | `qwen2.5-coder:7b` |
 | ------------------------- | ----- | ----- |
-| **Execution accuracy**    | **0.587** | **0.522** |
-| Validation pass rate      | 0.978 | 1.000 |
-| Execution rate            | 0.935 | 0.891 |
-| **Correct refusal rate**  | **1.000 (6/6)** | **1.000 (6/6)** |
-| False refusal rate        | 0.022 | 0.000 |
+| **Execution accuracy**    | **0.533** | **0.522** |
+| Validation pass rate      | 0.950 | 1.000 |
+| Execution rate            | 0.883 | 0.891 |
+| **Correct refusal rate**  | **0.857 (6/7)** | 1.000 (6/6) |
+| False refusal rate        | 0.050 | 0.000 |
 | Median latency            | 37.7 s | 46.5 s |
 
 | Bucket | Questions | `llama3.1:8b` | `qwen2.5-coder:7b` |
 | ------------ | --- | ----- | ----- |
 | filter       | 8   | 0.875 | 0.625 |
-| easy         | 8   | 0.875 | 0.625 |
+| easy         | 8   | 0.750 | 0.625 |
 | groupby      | 6   | 0.667 | **0.833** |
 | join         | 8   | 0.500 | 0.500 |
+| drifter      | 14  | 0.429 | not run |
 | qc           | 5   | 0.400 | 0.400 |
 | bgc          | 5   | 0.400 | 0.200 |
 | window       | 6   | 0.167 | 0.333 |
-| unanswerable | 6   | **6/6 refused** | **6/6 refused** |
+| unanswerable | 7   | 6/7 refused | 6/6 refused, on the smaller set |
 
-The llama3.1 column is one run on the current prompt, taken with nothing else
-using the machine. Its unanswerable row is now the [scope gate](#closing-it-without-the-model)
-rather than the model, which is why it matches qwen exactly and why it will not
-move between runs. Its false refusal rate of 0.022 is one `window` question,
-and it is not the gate: the validator reads the alias of a derived table as an
-unknown table and rejects `... FROM ( ... ) yearly`. That is a validator
-limitation this set had not previously hit, not a refusal anyone intended.
-qwen is a single run on the earlier prompt and is not directly comparable
-below the refusal row.
+The llama3.1 column is one run on the current prompt and the 67-question set,
+taken with nothing else using the machine. qwen has not been run on the larger
+set at all, so its column describes 52 different questions and is left here for
+the buckets it does cover rather than as a comparison.
 
-The earlier llama3.1 figure was 0.620, the mean of two runs that scored 28 and
-29 of 46 answerable questions. This run scores 27. That difference is inside
-the run-to-run movement measured [below](#on-repeated-runs) and should not be
-read as the scope gate costing accuracy: the gate touches only the six
-unanswerable questions, which are excluded from this metric.
+Six of the seven unanswerable questions are refused by the [scope gate](#closing-it-without-the-model)
+and will not move between runs or between models. The seventh is the one added
+with the drifter bucket, and the gate does not catch it, for the reason given
+when it was built: the gate keys on the quantity asked for, and depth is a
+quantity this database holds, just not for this platform. Asked how deep each
+buoy dived, the model joined the buoys to `measurements` and averaged
+`pressure_dbar` into a column it called `mean_depth`. The two platforms share
+no key and the catalog says so; the join it invented is the platform boundary
+being crossed, not a depth being measured.
+
+The false refusal rate of 0.050 is three questions and **only one of them is a
+refusal**. The other two are `ReadTimeout`: the model did not answer within the
+timeout on this hardware, which the harness cannot distinguish from a decline.
+The real one is `window`, where the validator reads the alias of a derived
+table as an unknown table and rejects `... FROM ( ... ) yearly`. So the figure
+overstates refusal and understates how slow this machine is.
 
 llama3.1 was previously the mean of two runs, qwen a single run. Both were measured before the IHO basin polygons replaced the latitude and longitude inequalities, which moved 128 profiles between regions. The set was re-run afterwards to check that it had not quietly shifted the score: 0.630, inside the 0.609 to 0.630 the two earlier runs produced, with every bucket unchanged. Reference and generated queries both read the same database, so a change in the data moves them together. Quantisation differs and is worth stating: llama3.1 is Q4_K_M, qwen is `7b-instruct-q3_K_M`, one step lower, because the larger file would not fit on the disk it was run from. Some of qwen's weakness on the easy buckets plausibly belongs to that rather than to the model.
 
@@ -587,12 +596,30 @@ Both lists are read off the schema rather than off this gold set. The refusal re
 
 | Correct refusal rate | Before drifters | After drifters | With the scope gate |
 | --- | --- | --- | --- |
-| `llama3.1:8b` | 0.833 (5/6) | 0.667 (4/6) | **1.000 (6/6)** |
-| False refusals contributed by the gate | - | - | **0 of 46** |
+| `llama3.1:8b`, on the original six | 0.833 (5/6) | 0.667 (4/6) | **1.000 (6/6)** |
+| False refusals contributed by the gate | - | - | **0 of 60** |
+
+That row is the six unanswerable questions the set had at the time, held constant so the three columns compare. A seventh was added later with the drifter bucket and the gate does not catch it, which is why the [headline](#results) reads 6/7 rather than 6/6. The gate keys on the quantity asked for, and the question asks how deep each drifting buoy dived: depth is a quantity this database holds, just not for that platform. It is the limit below, arriving immediately and from the first new questions written after the gate was built.
 
 **These two numbers are exact rather than sampled.** The gate is a lexical test over the question, with no model call, so it does not move between runs and does not depend on which model is shipped: `qwen2.5-coder`'s perfect refusal score, [reported below](#the-seafloor-question-on-a-second-model) as evidence that the gap was the model's, is now something neither model is asked to supply. The six refusals are also immediate, where they previously cost a full generation each.
 
 The limit is written into the module rather than left for a reader to discover. This is lexical matching, so a paraphrase it does not carry goes to the model exactly as before: "how deep is the ocean under float 1900083" needed a pattern added during testing, and there will be others. It can only add a refusal, never remove one, so a question it says nothing about is generated and validated on the path it always used.
+
+#### What the drifter bucket found
+
+For most of this project's life the gold set had 52 questions and not one was about the drifting buoys. The platform was reachable, exported, charted and refused against, and none of it was measured. 14 answerable questions and one unanswerable were added. The bucket scores **0.429**, second worst on the board.
+
+The failures are not spread evenly. They are three specific things, and the first two are caused by the fix that preceded them.
+
+**The worked example taught the shape along with the query.** The example added for the velocity columns is `Average surface current speed in each region`, which groups. Asked for the average in one named region, and asked for the single fastest current overall, the model returned a per-region breakdown both times. Neither question asked for one. The example fixed the arithmetic it was written for, `sqrt(u^2 + v^2)` rather than `u + v`, and taught a `GROUP BY` nobody asked for alongside it.
+
+**It did not fix what it was written for.** The buoy example exists because the model grouped by a `region` column on `drifters`, which does not exist, since region belongs to the fix rather than to the instrument. Asked which buoys reported from more than one region, the model wrote `SELECT count(*) FROM drifters WHERE region IS NOT NULL GROUP BY region`. The same mistake, with the example in the prompt.
+
+**The platform boundary is not holding.** Asked to compare float and buoy temperatures, the model joined `measurements` to `drifter_observations` directly and the query ran until the statement timeout killed it. Asked how deep the buoys dived, it joined them to `measurements` and averaged `pressure_dbar`. The catalog says in as many words that the two platforms do not join and that a question comparing them is answered by aggregating each separately. It is read and overridden, which is the same failure mode as the seafloor alias and suggests the same remedy: a rule that holds has to be code, not prose.
+
+A fourth failure is worth separating because it is not about buoys at all. Asked how many drifting buoys are in the database, the model wrote `SELECT count(*) FROM drifters WHERE buoy_type = 'SVPB'`, inventing a filter from a value that appears in the retrieved summaries. That is exactly what the `CONTEXT_RULE` in the prompt forbids, in the same prompt that forbids it.
+
+**None of this was visible before the questions existed.** The A/B that cleared the worked example of costing accuracy was run on the 52-question set, where the example is shown to no question at all, so it could not have detected the over-grouping it causes. A benchmark that does not cover a feature will report that the feature is fine.
 
 #### Did the worked examples move the window bucket?
 
@@ -622,7 +649,7 @@ So the earlier conclusion holds and now has evidence behind it: **that fabricati
 
 That conclusion was right and is now moot. Both halves of it assumed the choice was which model to ask, and the [scope gate](#closing-it-without-the-model) does not ask one: `llama3.1:8b` refuses the seafloor question now, not because it learned anything but because the question no longer reaches it. The lesson worth keeping is the one the section was written to make, that a fabrication surviving three rewordings is telling you something about where the rule belongs, rather than asking for a fourth.
 
-Validation pass rate is 0.978 and 1.000 while accuracy is 0.587 and 0.522. Nearly every generated query was well formed, safe and executable, and four in ten still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
+Validation pass rate is 0.950 while accuracy is 0.533. Nearly every generated query was well formed, safe and executable, and almost half still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
 
 #### On repeated runs
 
@@ -673,7 +700,7 @@ Six questions had to be repaired before the set could run at all, because they w
 - **The BGC sample is narrow.** Ten biogeochemical floats were loaded and none of them carries a NITRATE sensor, so that column is empty and the `bgc` bucket tests oxygen, chlorophyll, pH and backscatter only.
 - **Profile counts are shaped by the download, not by the ocean.** The sample takes a bounded number of cycles per float, so "which float reported most" is answerable but is a fact about what was fetched rather than about the fleet.
 - **The document retrieval gold set is still a template.** `questions.csv` is five rows referencing documents not committed here. Only the SQL side has real numbers.
-- **Not one of the 52 questions is about the drifting buoys.** The gold set was written before the second platform existed and was never extended, so every number here describes the Argo path alone. The buoy tables are reachable, exported, charted and refused against, and none of that is measured. The worked example added for the buoy velocities was aimed at a failure this set cannot see.
+- **The drifter bucket is new and shallow.** 14 questions is enough to show the platform is the weakest path and not enough to characterise it. It covers one year of buoys and three hull types, and no question tests the trajectory or distance queries the platform also supports.
 - **Single runs.** Every figure above except the refusal rates comes from one run, and two identical back-to-back runs disagreed on four of 46 questions. Differences smaller than about a tenth are not resolvable without `--runs N`.
 
 ## Beyond retrieval
@@ -724,7 +751,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
-**Evaluation.** Text-to-SQL scores 0.587 execution accuracy on the shipped model and 0.522 on a second one, and complex queries are much worse than either average suggests: the window bucket is 1 in 6 on the shipped model, and three worked examples aimed squarely at it moved nothing. Both figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so neither number is precise to better than about a tenth. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.533 execution accuracy over 67 questions on the shipped model. The second model has only been run on the earlier 52-question set, where it scored 0.522, so the two are not comparable. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 and the new drifter bucket 3 in 7, and worked examples aimed at both moved one and actively hurt the other. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. Two of the three false refusals in the headline are the model timing out rather than declining, which this hardware produces and the harness cannot tell apart. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 
@@ -750,14 +777,16 @@ Done:
 - [x] A second model on the same 52 questions, which closed the refusal gap
 - [x] A document retrieval gold set that is not a five-row template, with numbers published
 - [x] Retrieval fixed: the IVFFlat vector index was searching one cluster of a hundred. HNSW took hit@5 from 0.160 to 0.960
-- [x] The refusal the drifters reopened, closed by a scope gate in front of the model rather than a fourth rewording: 6/6 correct refusals, 0 false refusals on the 46 answerable questions
+- [x] The refusal the drifters reopened, closed by a scope gate in front of the model rather than a fourth rewording: it refuses 6 of the 7 unanswerable questions and none of the answerable ones
 - [x] ERDDAP's numeric fill value dropped at parse time, at the database and in the catalog, after 189 fixes stored `-999999` as a surface current
 - [x] The drifting buoy examples shown only to questions that could be about the buoys, so the other 51 do not carry them
+- [x] Drifter questions in the gold set, 14 answerable and one not, which found the buoy path is the weakest measured and that the buoy example causes the over-grouping it was meant to cure
 
 Not done, honestly:
 
-- [ ] Drifter questions in the SQL gold set, which currently has none, so the second platform is unmeasured
 - [ ] Multi-run evaluation as the default for any published comparison, now that single runs are visibly noisy on this hardware
+- [ ] Stop the two platforms being joined: the catalog forbids it in prose and the model does it anyway, which is the seafloor lesson again
+- [ ] A worked example for a single-region and a whole-set velocity query, since the grouped one taught grouping
 - [ ] Persist conversation history, which currently dies with the process
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
 - [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)
