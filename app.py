@@ -64,94 +64,6 @@ def _page_home(cfg):
     )
 
 
-def _page_ask(cfg):
-    st.title("Ask a Question")
-
-    svc = get_service()
-
-    if svc.stats()["chunks"] == 0:
-        st.warning(
-            "The Argo manuals are not indexed yet. See **Load the manuals** "
-            "in the README."
-        )
-        return
-
-    question = st.text_input(
-        "Your question",
-        placeholder=(
-            "e.g. What does a quality control flag of 4 mean?"
-        ),
-    )
-
-    if not question or not st.button("Ask", type="primary"):
-        return
-
-    with st.spinner("Retrieving and generating…"):
-        ans = svc.ask(question)
-
-    left, right = st.columns([3, 1])
-
-    with left:
-        if ans.answered:
-            st.markdown("#### Answer")
-            st.write(ans.answer)
-        else:
-            st.warning(ans.answer)
-            st.caption(f"Why: {ans.reason}")
-
-        if ans.error:
-            st.error(ans.error)
-
-    with right:
-        st.metric(
-            "Confidence",
-            f"{ans.confidence.percent}%",
-        )
-        st.progress(ans.confidence.score)
-        st.caption(
-            f"total {ans.latency_ms.get('total_ms', 0):.0f} ms"
-        )
-
-    st.markdown(
-        "#### Sources"
-        if ans.answered
-        else "#### Closest passages"
-    )
-
-    for source in ans.sources:
-        with st.expander(
-            f"[{source.rank}] "
-            f"{source.chunk.doc_name}, "
-            f"page {source.chunk.page} · "
-            f"sim {source.score:.3f} · "
-            f"{source.chunk.chunk_id}"
-        ):
-            st.write(source.chunk.text)
-
-    with st.expander("🔍 Retrieval details"):
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Rank": source.rank,
-                        "Score": round(source.score, 4),
-                        "Document": source.chunk.doc_name,
-                        "Page": source.chunk.page,
-                        "Chunk length": source.chunk.char_len,
-                    }
-                    for source in ans.sources
-                ]
-            ),
-            width="stretch",
-        )
-
-        st.json(ans.confidence.to_dict())
-
-    if ans.prompt:
-        with st.expander("📝 Exact prompt sent to the LLM"):
-            st.code(ans.prompt)
-
-
 def _page_evaluation(cfg):
     st.title("Evaluation")
 
@@ -360,23 +272,35 @@ def _remember(cfg, history, question, answer):
         del history[:-cap]
 
 
-def _page_ocean_data(cfg):
-    """Conversational interface over the measurements database.
+def _page_ask(cfg):
+    """One question box over both sources.
+
+    This was two pages. "Ask Questions" ran the manuals alone and showed
+    citations and a confidence score; "Ocean Data" ran the router, and when the
+    router chose the manuals it printed the answer and told the reader to go to
+    the other page for the evidence. That is the routed path admitting it could
+    not show its own working, and the sources were in the result all along.
+
+    So the router decides, and whichever source answers shows what it rests on:
+    the document and page for a manual claim, the query for a table. Asking the
+    user to pick the backend first was asking them to know the answer before
+    they asked the question.
 
     A thread rather than a single question box, because the system supports
-    follow-ups and one question-and-answer pane hides that. Each turn keeps
-    its own chart, table and SQL, so scrolling back shows what was asked and
-    what answered it rather than only the latest result.
+    follow-ups and one question-and-answer pane hides that. Each turn keeps its
+    own chart, table and SQL, so scrolling back shows what was asked and what
+    answered it rather than only the latest result.
     """
 
     svc = get_service()
 
-    st.header("🌊 Ocean Data")
+    st.header("💬 Ask")
 
     st.caption(
-        "Ask about ARGO floats and drifting buoys. The question is routed, "
-        "the SQL is generated, validated and shown to you before you are "
-        "asked to believe the numbers. Follow-ups work, and so do other "
+        "One question box over the Argo manuals and the measurements database. "
+        "The question is routed; a manual answer carries its document and page, "
+        "and a data answer carries the SQL that produced it, shown before you "
+        "are asked to believe the numbers. Follow-ups work, and so do other "
         "languages: ask in Hindi, Tamil or Bengali and the answer comes back "
         "in the same language."
     )
@@ -490,6 +414,56 @@ def _render_combined(svc, question, result, position):
         _download_buttons(svc, result, question, position)
 
 
+def _render_documents(result):
+    """A manual answer, with the evidence it rests on.
+
+    This used to print the answer and send the reader to a second page for the
+    citations, which was the routed path admitting it could not show its own
+    working. The sources were in the result the whole time; nothing rendered
+    them. An answer from the manuals without its document and page is the thing
+    the confidence gate exists to prevent, so it is shown here.
+    """
+    if not result.get("answered"):
+        st.warning(result["answer"])
+
+        if result.get("reason"):
+            st.caption(f"Why: {result['reason']}")
+    else:
+        st.write(result["answer"])
+
+    sources = result.get("sources") or []
+
+    left, right = st.columns([3, 1])
+
+    with right:
+        percent = result.get("confidence_percent")
+
+        if percent is None:
+            percent = round(float(result.get("confidence") or 0.0) * 100)
+
+        st.metric("Confidence", f"{percent}%")
+        st.progress(min(max(float(result.get("confidence") or 0.0), 0.0), 1.0))
+
+    with left:
+        if not sources:
+            return
+
+        st.markdown(
+            "**Sources**" if result.get("answered") else "**Closest passages**"
+        )
+
+        for source in sources:
+            chunk = source.get("chunk", {})
+
+            with st.expander(
+                f"[{source.get('rank', '?')}] "
+                f"{chunk.get('doc_name', 'source')}, "
+                f"page {chunk.get('page', '?')} · "
+                f"sim {float(source.get('score') or 0.0):.3f}"
+            ):
+                st.write(chunk.get("text", ""))
+
+
 def _render_answer(svc, question, result, position):
     """One assistant turn: the answer and everything backing it.
 
@@ -503,11 +477,7 @@ def _render_answer(svc, question, result, position):
     )
 
     if result["route"] == "documents":
-        st.info(
-            "This was routed to the Argo manuals, not the database. "
-            "Ask it on the Ask Questions page for citations and confidence."
-        )
-        st.write(result["answer"])
+        _render_documents(result)
         return
 
     if result["route"] == "both":
@@ -596,8 +566,7 @@ def _render_answer(svc, question, result, position):
 
 PAGES = {
     "🏠 Home": _page_home,
-    "💬 Ask Questions": _page_ask,
-    "🌊 Ocean Data": _page_ocean_data,
+    "💬 Ask": _page_ask,
     "📊 Evaluation": _page_evaluation,
     "📈 Monitoring": _page_monitoring,
     "⚙️ Settings": _page_settings,

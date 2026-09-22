@@ -13,11 +13,13 @@ The service exposes two public query methods:
 
     ask(question) -> Answer
         Documents-only path returning the typed Answer dataclass.
-        Used by the existing "Ask Questions" page.
+        Used by the API's route_override and by callers that want the manuals
+        and nothing else.
 
     answer(question) -> dict
-        Routed path returning a uniform dictionary.
-        Used by the Ocean Data page and FastAPI.
+        Routed path returning a uniform dictionary. Used by the Streamlit page
+        and FastAPI. This is the normal way in: the router decides which
+        source answers, so a caller does not have to know before asking.
 """
 
 from __future__ import annotations
