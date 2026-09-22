@@ -40,6 +40,7 @@ def validate(
     max_limit=5000,
     default_limit=500,
     column_catalog=None,
+    platforms=None,
 ):
     """Return a safe, LIMIT-capped query, or raise SQLRejected.
 
@@ -47,6 +48,12 @@ def validate(
     given, qualified references such as ``f.qc_flag`` are checked against the
     table the alias resolves to, so a column the model invented is rejected
     here instead of failing in the database.
+
+    ``platforms`` maps a platform name to the tables belonging to it, and no
+    single FROM/JOIN chain may span two of them. It defaults to ``PLATFORMS``
+    rather than to off, because a caller that forgets it gets the rule rather
+    than silence, and because the evaluation harness calls this with positional
+    arguments only.
     """
 
     if not sql:
@@ -107,6 +114,11 @@ def validate(
     if column_catalog:
         _check_columns(lowered, scan, column_catalog)
 
+    _check_platforms(
+        scan,
+        PLATFORMS if platforms is None else platforms,
+    )
+
     return _cap_limit(
         _drop_pointless_order_by(str(stmt).strip()),
         max_limit,
@@ -153,6 +165,84 @@ def _blank_function_args(lowered):
                         break
 
     return "".join(out)
+
+
+# The two in-situ platforms. A float profiles the water column on a cycle; a
+# buoy rides the surface and reports a fix every six hours. They share no key,
+# and the catalog says so, so a question about both is answered by aggregating
+# each separately and joining the aggregates.
+#
+# Prose did not hold. Asked to compare float and buoy temperatures the model
+# wrote `JOIN drifter_observations o ON o.region = p.region`, which pairs every
+# measurement in a basin with every buoy fix in it and ran until the statement
+# timeout. Asked how deep the buoys dived it wrote
+# `JOIN profiles p ON p.profile_id = o.observation_id`, equating a buoy fix id
+# with a profile id, and returned an average pressure as the depth a buoy
+# reached. Both are fluent, and the second answers a question about a platform
+# that has no depth at all.
+PLATFORMS = {
+    "argo": frozenset({"floats", "profiles", "measurements"}),
+    "drifter": frozenset({"drifters", "drifter_observations"}),
+}
+
+
+def _paren_levels(scan):
+    """Split into one text per parenthesis nesting level.
+
+    A CTE body and the query reading it are different levels, so a table
+    inside one is not read as joined to a table outside it. That distinction
+    is the whole point: aggregating each platform in its own CTE and joining
+    the two results on region is the correct answer to a question about both,
+    and must keep passing.
+
+    Deeper spans are blanked in the enclosing level rather than deleted, so
+    every other offset stays put. Unbalanced parentheses leave their partial
+    level in the list, which is checked like any other.
+    """
+    levels = []
+    stack = [[]]
+
+    for char in scan:
+        if char == "(":
+            stack.append([])
+        elif char == ")" and len(stack) > 1:
+            levels.append("".join(stack.pop()))
+            stack[-1].append(" ")
+        else:
+            stack[-1].append(" " if char == ")" else char)
+
+    while stack:
+        levels.append("".join(stack.pop()))
+
+    return levels
+
+
+def _check_platforms(scan, platforms):
+    """Reject a FROM/JOIN chain that spans both platforms."""
+
+    for level in _paren_levels(scan):
+        names = {
+            m.group(1)
+            for m in re.finditer(
+                r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)",
+                level,
+            )
+        }
+
+        hit = sorted(
+            family
+            for family, tables in platforms.items()
+            if names & tables
+        )
+
+        if len(hit) > 1:
+            raise SQLRejected(
+                "a query cannot join the "
+                + " tables to the ".join(hit)
+                + " tables: the two platforms share no key, so a question "
+                "about both is answered by aggregating each separately and "
+                "joining the results"
+            )
 
 
 # `x AS (` binds a CTE, or a named window. Neither is a table, and a column
