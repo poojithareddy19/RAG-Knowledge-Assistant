@@ -11,6 +11,13 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
+[tool.ruff.lint.isort]
+# This repository has a src/mcp/ package and also depends on the installed
+# `mcp` library. Newer ruff infers `mcp` is first-party from the directory
+# name and splits the import block, which is both wrong and unstable across
+# ruff versions. Naming it settles the question.
+known-third-party = ["mcp"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

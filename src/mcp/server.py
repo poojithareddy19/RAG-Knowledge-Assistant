@@ -36,6 +36,7 @@ import json
 import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+
 from src.sqlgen.schema_context import load_catalog
 from src.utils.db import fetch_all
 

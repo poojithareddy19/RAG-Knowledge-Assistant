@@ -26,7 +26,14 @@ jobs:
       - name: Install ruff
         # Only ruff. Linting does not need torch, and pulling the full
         # requirements here would cost several minutes to say nothing new.
-        run: pip install "ruff>=0.5"
+        #
+        # Pinned to a minor version rather than >=. The first run of this
+        # workflow failed on a repository that had not changed: local ruff was
+        # 0.12 and CI resolved to 0.16, whose isort inferred that `mcp` was
+        # first-party from this project's own src/mcp/ directory and wanted the
+        # import block split. A linter that can fail on someone else's release
+        # is a build that breaks for reasons no commit caused.
+        run: pip install "ruff~=0.16.0"
 
       - name: Lint
         run: ruff check src tests scripts app.py

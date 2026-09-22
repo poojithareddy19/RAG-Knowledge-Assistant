@@ -47,4 +47,4 @@ httpx>=0.27
 # install would import and then fail to start.
 mcp>=2.2
 pytest>=8.0
-ruff>=0.5
+ruff~=0.16.0
