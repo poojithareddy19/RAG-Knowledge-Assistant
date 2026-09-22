@@ -559,12 +559,18 @@ buoy dived, the model joined the buoys to `measurements` and averaged
 no key and the catalog says so; the join it invented is the platform boundary
 being crossed, not a depth being measured.
 
-The false refusal rate of 0.050 is three questions and **only one of them is a
-refusal**. The other two are `ReadTimeout`: the model did not answer within the
-timeout on this hardware, which the harness cannot distinguish from a decline.
-The real one is `window`, where the validator reads the alias of a derived
-table as an unknown table and rejects `... FROM ( ... ) yearly`. So the figure
-overstates refusal and understates how slow this machine is.
+The false refusal rate counts three things that are not the same. Most of it is
+`ReadTimeout`: the model did not answer in time, which the harness cannot tell
+apart from a decline. That had a cause worth naming. **The harness was running
+a stricter timeout than the system it measures**, using a function default of
+90 seconds while `config.yaml` gave the app 120, so generations that would have
+finished were scored as refusals. Both now read the same config.
+
+The remaining one is a real rejection, and it is correct. The query put a
+derived table's alias inside a sibling subquery, which PostgreSQL does not
+allow: `ERROR: relation "yearly" does not exist`. The validator caught invalid
+SQL before the database did, which is its job. An earlier draft of this
+paragraph called that a validator limitation. It was not; the query was broken.
 
 llama3.1 was previously the mean of two runs, qwen a single run. Both were measured before the IHO basin polygons replaced the latitude and longitude inequalities, which moved 128 profiles between regions. The set was re-run afterwards to check that it had not quietly shifted the score: 0.630, inside the 0.609 to 0.630 the two earlier runs produced, with every bucket unchanged. Reference and generated queries both read the same database, so a change in the data moves them together. Quantisation differs and is worth stating: llama3.1 is Q4_K_M, qwen is `7b-instruct-q3_K_M`, one step lower, because the larger file would not fit on the disk it was run from. Some of qwen's weakness on the easy buckets plausibly belongs to that rather than to the model.
 
@@ -693,13 +699,34 @@ Most of the headline drop is the `bgc` bucket, and it is a correction rather tha
 
 Six questions had to be repaired before the set could run at all, because they were written against data that no longer exists: two asked about years with no profiles in the real sample, one asked about synthetic float 2900007, one counted nitrate readings that no sampled float carries, and the two "which float has the most profiles" questions were restored now that real floats have genuinely different profile counts rather than 730 each.
 
+### Scoring the prose, not just the retrieval
+
+Two of the three things worth measuring were measured. Retrieval was scored with hit@5, recall and nDCG. Text-to-SQL was scored by executing the generated query against a reference. Nothing scored the **sentence handed to the user**, which is the half the project's central claim rests on: "being confidently wrong is worse than saying nothing" is a statement about generated text, and the only evidence for it was that retrieval had found the right page.
+
+[`src/evaluation/generation_metrics.py`](src/evaluation/generation_metrics.py) scores it, in two groups.
+
+**Deterministic, no model call.** These cost nothing and cannot drift:
+
+- `answered_rate` - how often the system answers rather than declining. A system that refuses everything scores perfectly on faithfulness, so no quality number means anything without this beside it.
+- `citation_accuracy` - of the answers given, how many cite the document and page the gold set names. An answer citing the wrong page is not grounded, and no model is needed to check that.
+- `lexical_support` - the share of the answer's content words that appear in the passages it was given. A **proxy** rather than a measure, and reported as one: paraphrase scores low and fluent copying scores high. It is a floor. An answer near zero is not reading its sources.
+
+**Judged, one model call per question, behind `--judge`:** faithfulness, answer relevance and correctness against the gold answer.
+
+```bash
+python -m src.evaluation.generation_metrics            # deterministic only
+python -m src.evaluation.generation_metrics --judge    # adds the graded three
+```
+
+The honest limit is written into the module: the judge is the same local model that wrote the answer, so it is a poor judge of its own output and shares its own blind spots. Read `citation_accuracy` first, which nothing can talk its way out of, and treat a judged score as a smoke alarm rather than a measurement. A judge that cannot be reached is recorded as unknown and left out of the mean, so an outage cannot look like a quality drop.
+
 ### What these numbers do not tell you
 
 - **One model, one prompt, one schema.** The set has never been run against a second model, so nothing here separates what this model cannot do from what no model could do with this prompt.
 - **Execution accuracy has false positives.** A wrong query can collapse to the right number when the data happens to cooperate, and the comparison cannot tell that apart from understanding.
 - **The BGC sample is narrow.** Ten biogeochemical floats were loaded and none of them carries a NITRATE sensor, so that column is empty and the `bgc` bucket tests oxygen, chlorophyll, pH and backscatter only.
 - **Profile counts are shaped by the download, not by the ocean.** The sample takes a bounded number of cycles per float, so "which float reported most" is answerable but is a fact about what was fetched rather than about the fleet.
-- **The document retrieval gold set is still a template.** `questions.csv` is five rows referencing documents not committed here. Only the SQL side has real numbers.
+- **The document gold set is small.** `questions.csv` is 25 questions with real ground-truth passages, but it was written by the same person who chose the corpus, which is the honest limit on what hit@5 and the generation scores show.
 - **The drifter bucket is new and shallow.** 14 questions is enough to show the platform is the weakest path and not enough to characterise it. It covers one year of buoys and three hull types, and no question tests the trajectory or distance queries the platform also supports.
 - **Single runs.** Every figure above except the refusal rates comes from one run, and two identical back-to-back runs disagreed on four of 46 questions. Differences smaller than about a tenth are not resolvable without `--runs N`.
 
@@ -781,15 +808,18 @@ Done:
 - [x] ERDDAP's numeric fill value dropped at parse time, at the database and in the catalog, after 189 fixes stored `-999999` as a surface current
 - [x] The drifting buoy examples shown only to questions that could be about the buoys, so the other 51 do not carry them
 - [x] Drifter questions in the gold set, 14 answerable and one not, which found the buoy path is the weakest measured and that the buoy example causes the over-grouping it was meant to cure
+- [x] Generation scored, not just retrieval: citation accuracy and answer rate deterministically, faithfulness and relevance behind a judge flag
+- [x] A repair attempt on a query that failed, given the error it failed with, with refusals never repaired
+- [x] Cross-platform joins rejected in the validator, including the trivial-subquery form a model found to get round the first version
+- [x] A React front end over the API, which is the second client the response contract needed
+- [x] GitHub Actions running the suite and the linter on 3.11 and 3.12
+- [x] A single run now says so in its own output, rather than leaving the caveat to a README paragraph
 
 Not done, honestly:
 
-- [ ] Multi-run evaluation as the default for any published comparison, now that single runs are visibly noisy on this hardware
-- [ ] Stop the two platforms being joined: the catalog forbids it in prose and the model does it anyway, which is the seafloor lesson again
-- [ ] A worked example for a single-region and a whole-set velocity query, since the grouped one taught grouping
 - [ ] Persist conversation history, which currently dies with the process
+- [ ] A judge that is not the model under test, which is the honest limit of the generation scores
+- [ ] Deploy the API and the front end somewhere, the last part of the problem statement still on paper
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
-- [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)
 - [ ] Hybrid search (BM25 + dense), which would likely help the exact-phrase manual questions most
-- [ ] GitHub Actions CI
 - [ ] OCR path for scanned PDFs
