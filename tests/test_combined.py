@@ -188,6 +188,9 @@ def test_the_prompt_forbids_inventing_numbers(stub_combine):
 
     assert "Do not round, total, average or compare" in synthesis.SYSTEM
     assert "must appear in the result exactly" in synthesis.SYSTEM
+    # A count from the database carries no manual citation, or the answer
+    # claims the manual is the source of a number it never mentions.
+    assert "never put a citation after it" in synthesis.SYSTEM
 
 
 # ------------------------------------------------------------------

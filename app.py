@@ -427,6 +427,69 @@ def _page_ocean_data(cfg):
     st.rerun()
 
 
+def _render_combined(svc, question, result, position):
+    """A turn answered from the manuals and the database at once.
+
+    The synthesised sentence is shown first because it is what was asked for,
+    and both halves are shown underneath because it is the one answer in the
+    system written from two sources, which makes it the one a reader most
+    needs to be able to take apart.
+    """
+    if result.get("refused"):
+        st.warning(result["answer"])
+        return
+
+    st.success(result["answer"])
+
+    if result.get("combined_by") == "stapled":
+        st.caption(
+            "Shown as two answers rather than one. The sentence joining them "
+            "could not be written, so each source appears as it came back."
+        )
+
+    parts = result.get("parts", {})
+    documents = parts.get("documents", {})
+    data = parts.get("data", {})
+
+    left, right = st.columns(2)
+
+    with left:
+        with st.expander("From the manuals", expanded=False):
+            st.caption(f"Asked as: {result.get('question_documents', '')}")
+
+            if documents.get("answered"):
+                st.write(documents.get("answer", ""))
+
+                for source in documents.get("sources", [])[:3]:
+                    st.caption(
+                        f"{source.get('doc_name', '')} "
+                        f"page {source.get('page', '')}"
+                    )
+            else:
+                st.info(
+                    "The manuals had nothing confident to add, so the answer "
+                    "rests on the data alone."
+                )
+
+    with right:
+        with st.expander("From the database", expanded=False):
+            st.caption(f"Asked as: {result.get('question_data', '')}")
+
+            if data.get("answered"):
+                st.write(data.get("answer", ""))
+                st.code(data.get("generated_sql") or "", language="sql")
+            else:
+                st.info(data.get("answer", "No rows were returned."))
+
+    if result.get("rows"):
+        st.dataframe(
+            pd.DataFrame(result["rows"], columns=result["columns"]),
+            width="stretch",
+        )
+
+        _download_buttons(svc, result, question, position)
+
+
 def _render_answer(svc, question, result, position):
     """One assistant turn: the answer and everything backing it.
 
@@ -445,6 +508,10 @@ def _render_answer(svc, question, result, position):
             "Ask it on the Ask Questions page for citations and confidence."
         )
         st.write(result["answer"])
+        return
+
+    if result["route"] == "both":
+        _render_combined(svc, question, result, position)
         return
 
     if result.get("refused"):

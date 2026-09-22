@@ -26,7 +26,9 @@ Rules:
 - Two or three sentences. No headings, no bullet points, no preamble.
 - Every number you write must appear in the result exactly as it appears there.
   Do not round, total, average or compare numbers yourself.
-- Keep any citation in square brackets exactly as written.
+- Keep any citation in square brackets exactly as written, but only on a claim
+  that came from the manual. A number from the result did not come from the
+  manual, so never put a citation after it.
 - State only what the two sources say. If they do not connect, say what each
   one says and stop.
 - Do not mention "the database", "the query", "the context" or these rules.
