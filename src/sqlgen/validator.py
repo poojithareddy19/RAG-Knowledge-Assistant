@@ -186,63 +186,147 @@ PLATFORMS = {
 }
 
 
-def _paren_levels(scan):
-    """Split into one text per parenthesis nesting level.
+# A chain may combine the platforms only through aggregates. These are how an
+# aggregate is recognised: a GROUP BY, or an aggregate call in a query with no
+# grouping, which collapses to one row.
+# The call's own parentheses have already been replaced by a placeholder when
+# this runs, so `avg(x)` reads as `avg__span3__`. Both forms are matched: the
+# flattened one is what is actually seen, and the literal one keeps the pattern
+# readable and correct if it is ever used on unflattened text.
+_AGGREGATED = re.compile(
+    r"\bgroup\s+by\b"
+    r"|\b(?:avg|sum|count|min|max|percentile_cont|percentile_disc)"
+    r"\s*(?:\(|__span)",
+)
 
-    A CTE body and the query reading it are different levels, so a table
-    inside one is not read as joined to a table outside it. That distinction
-    is the whole point: aggregating each platform in its own CTE and joining
-    the two results on region is the correct answer to a question about both,
-    and must keep passing.
+_SPAN = re.compile(r"\(([^()]*)\)")
 
-    Deeper spans are blanked in the enclosing level rather than deleted, so
-    every other offset stays put. Unbalanced parentheses leave their partial
-    level in the list, which is checked like any other.
+_SPAN_REF = re.compile(r"__span(\d+)__")
+
+# `name AS __spanN__` binds a CTE to a span. `__spanN__ alias` or
+# `__spanN__ AS alias` binds a derived table to one.
+_CTE_BIND = re.compile(r"\b([a-z_][a-z0-9_]*)\s+as\s+__span(\d+)__")
+
+
+def _flatten(scan):
+    """Replace every parenthesised span with a ``__spanN__`` placeholder.
+
+    Returns the top-level text and ``{n: body}``. A body may itself contain
+    placeholders, so a span's full contents are recovered by following them.
+
+    This replaces an earlier version that blanked spans to spaces. Blanking
+    lost which span sat where, and a query could then put each platform in its
+    own trivial subquery and join the two: every nesting level held one
+    platform, and the level holding the join held no tables at all. A model
+    found that on its first attempt at working around the rule.
     """
-    levels = []
-    stack = [[]]
+    spans = {}
+    text = scan
 
-    for char in scan:
-        if char == "(":
-            stack.append([])
-        elif char == ")" and len(stack) > 1:
-            levels.append("".join(stack.pop()))
-            stack[-1].append(" ")
-        else:
-            stack[-1].append(" " if char == ")" else char)
+    while True:
+        match = _SPAN.search(text)
 
-    while stack:
-        levels.append("".join(stack.pop()))
+        if not match:
+            return text, spans
 
-    return levels
+        index = len(spans)
+        spans[index] = match.group(1)
+        text = text[: match.start()] + f"__span{index}__" + text[match.end() :]
+
+        if len(spans) > 200:
+            # Pathological nesting. Stop rather than loop, and let the rest of
+            # the validator judge what is left.
+            return text, spans
+
+
+def _span_text(index, spans, seen=None):
+    """A span's text with every nested placeholder expanded."""
+
+    seen = seen or set()
+
+    if index in seen or index not in spans:
+        return ""
+
+    seen = seen | {index}
+    body = spans[index]
+
+    return body + " " + " ".join(
+        _span_text(int(n), spans, seen) for n in _SPAN_REF.findall(body)
+    )
+
+
+def _platforms_of(text, platforms):
+    """Which platforms the tables in this text belong to."""
+
+    names = {
+        m.group(1)
+        for m in re.finditer(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", text)
+    }
+
+    return {
+        family
+        for family, tables in platforms.items()
+        if names & tables
+    }
 
 
 def _check_platforms(scan, platforms):
-    """Reject a FROM/JOIN chain that spans both platforms."""
+    """Reject a FROM/JOIN chain that spans both platforms unaggregated.
 
-    for level in _paren_levels(scan):
-        names = {
-            m.group(1)
-            for m in re.finditer(
-                r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)",
-                level,
-            )
-        }
+    The correct answer to a question about both platforms has the same shape
+    as the way round the rule: two subqueries, one per platform, joined. What
+    separates them is aggregation. Two per-region aggregates joined on region
+    is one row per region against one row per region, and means something.
+    Two raw row sets joined on region pairs every measurement in a basin with
+    every buoy fix in it, which is the query that ran to the statement timeout.
 
-        hit = sorted(
-            family
-            for family, tables in platforms.items()
-            if names & tables
+    So a chain may span the platforms only when every side carrying one is an
+    aggregate. A bare table never qualifies.
+    """
+    text, spans = _flatten(scan)
+    bodies = {i: _span_text(i, spans) for i in spans}
+
+    # Every scope: the statement itself and each span, since a join can live
+    # at any depth.
+    scopes = [text] + [spans[i] for i in spans]
+
+    for scope in scopes:
+        cte = {m.group(1): int(m.group(2)) for m in _CTE_BIND.finditer(scope)}
+
+        # What each FROM/JOIN target contributes, as (platforms, aggregated).
+        participants = []
+
+        for m in re.finditer(
+            r"\b(?:from|join)\s+(__span(\d+)__|[a-z_][a-z0-9_]*)",
+            scope,
+        ):
+            target, span_no = m.group(1), m.group(2)
+
+            if span_no is not None:
+                body = bodies.get(int(span_no), "")
+                participants.append((_platforms_of(body, platforms), bool(_AGGREGATED.search(body))))
+            elif target in cte:
+                body = bodies.get(cte[target], "")
+                participants.append((_platforms_of(body, platforms), bool(_AGGREGATED.search(body))))
+            else:
+                own = {f for f, t in platforms.items() if target in t}
+                participants.append((own, False))
+
+        carried = sorted({f for fams, _ in participants for f in fams})
+
+        if len(carried) < 2:
+            continue
+
+        if all(agg for fams, agg in participants if fams):
+            continue
+
+        raise SQLRejected(
+            "a query cannot join the "
+            + " tables to the ".join(carried)
+            + " tables: the two platforms share no key, so a question about "
+            "both is answered by aggregating each separately and joining the "
+            "results"
         )
-
-        if len(hit) > 1:
-            raise SQLRejected(
-                "a query cannot join the "
-                + " tables to the ".join(hit)
-                + " tables: the two platforms share no key, so a question "
-                "about both is answered by aggregating each separately and "
-                "joining the results"
-            )
 
 
 # `x AS (` binds a CTE, or a named window. Neither is a table, and a column

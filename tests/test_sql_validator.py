@@ -351,3 +351,68 @@ WHERE p.region IN (SELECT o.region FROM drifter_observations o)"""
     )
 
     assert "limit" in out.lower()
+
+
+def test_wrapping_each_platform_in_a_subquery_does_not_get_round_the_rule():
+    """The first version of this rule checked each nesting level on its own.
+
+    A model asked to repair a rejected cross-platform join produced exactly
+    this on its first attempt: one trivial subquery per platform, joined. Every
+    level held one platform, the level holding the join held no tables, and it
+    passed. It is still a row-level join between the two platforms.
+    """
+    with pytest.raises(SQLRejected, match="share no key"):
+        va(
+            """SELECT p.region
+FROM ( SELECT region FROM profiles ) p
+JOIN ( SELECT region FROM drifter_observations ) o ON o.region = p.region"""
+        )
+
+
+def test_two_aggregated_derived_tables_are_allowed():
+    """Aggregation is what separates the correct answer from the way round it.
+
+    One row per region joined to one row per region means something. Raw rows
+    joined on region pair every measurement in a basin with every buoy fix in
+    it, which is the query that ran to the statement timeout.
+    """
+    out = va(
+        """SELECT a.region, a.t, b.t
+FROM (
+    SELECT p.region, avg(m.temperature_c) AS t
+    FROM measurements m
+    JOIN profiles p ON p.profile_id = m.profile_id
+    WHERE m.qc_flag = 1
+    GROUP BY p.region
+) a
+JOIN (
+    SELECT o.region, avg(o.sst_c) AS t
+    FROM drifter_observations o
+    WHERE o.sst_c IS NOT NULL
+    GROUP BY o.region
+) b ON b.region = a.region"""
+    )
+
+    assert "limit" in out.lower()
+
+
+def test_an_aggregate_without_group_by_also_counts():
+    """A bare aggregate collapses to one row, so joining two of them is as
+    safe as joining two grouped ones."""
+    out = va(
+        """SELECT a.t, b.t
+FROM ( SELECT avg(m.temperature_c) AS t FROM measurements m ) a
+CROSS JOIN ( SELECT avg(o.sst_c) AS t FROM drifter_observations o ) b"""
+    )
+
+    assert "limit" in out.lower()
+
+
+def test_one_aggregated_side_is_not_enough():
+    """Aggregating only one side still pairs every row of the other with it."""
+    with pytest.raises(SQLRejected, match="share no key"):
+        va(
+            """SELECT a.t, o.sst_c
+FROM ( SELECT avg(m.temperature_c) AS t FROM measurements m GROUP BY m.profile_id ) a
+JOIN drifter_observations o ON true"""
+        )
