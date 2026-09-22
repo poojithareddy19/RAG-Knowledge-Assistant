@@ -50,8 +50,9 @@ from decimal import Decimal
 import pandas as pd
 
 from src.sqlgen.executor import run_query
-from src.sqlgen.generator import generate_sql
+from src.sqlgen.generator import generate_sql, repair_sql
 from src.sqlgen.validator import SQLRejected, validate
+from src.utils.config import get_config
 
 ALLOWED = ["floats", "profiles", "measurements", "drifters", "drifter_observations"]
 
@@ -115,6 +116,32 @@ def _expected_rows(expected_sql):
     )["rows"]
 
 
+def _gen_timeout():
+    """The wall clock the app allows a generation, read from the same config.
+
+    The harness used the function default of 90 seconds while config.yaml gave
+    the app 120. On hardware this slow that gap is not cosmetic: it turned
+    generations that would have finished into ReadTimeout, which the harness
+    scores as a refusal. A benchmark must not be stricter than the system it
+    measures.
+    """
+    try:
+        return int(get_config().sql.get("gen_timeout_seconds", 90))
+    except Exception:
+        return 90
+
+
+def _is_refusal(sql):
+    """Whether this "failure" is the system correctly declining.
+
+    A refusal must never be repaired. The scope gate returns UNANSWERABLE for a
+    quantity the schema does not hold, and a model may return it for a question
+    it cannot answer; feeding either back as an error to be fixed asks for the
+    fabrication the refusal exists to prevent.
+    """
+    return not sql or sql.strip().upper().startswith("UNANSWERABLE")
+
+
 def evaluate_one(
     question,
     expected_sql=None,
@@ -122,6 +149,7 @@ def evaluate_one(
     use_cache=False,
     use_semantic=True,
     model=None,
+    repair=True,
 ):
     """Generate, validate, execute and compare one question.
 
@@ -142,6 +170,11 @@ def evaluate_one(
         "error": None,
         "sql": None,
         "context_used": 0,
+        # A repair that was tried and failed is not the same as one that was
+        # never needed, and both look like a failed row without these.
+        "repair_attempted": False,
+        "repaired": False,
+        "first_error": None,
     }
 
     try:
@@ -155,17 +188,47 @@ def evaluate_one(
             include_examples=include_examples,
             use_cache=use_cache,
             context=context,
+            timeout=_gen_timeout(),
         )
 
         record["sql"] = raw
 
-        safe = validate(raw, ALLOWED)
+        try:
+            safe = validate(raw, ALLOWED)
+            record["validated"] = True
 
-        record["validated"] = True
+            out = run_query(safe)
+            record["executed"] = True
+        except Exception as first:
+            # One repair attempt, given the error the query failed with. A
+            # refusal is never repaired: the model declining, or the scope
+            # gate refusing a quantity the schema does not hold, is the
+            # correct answer rather than a failure to work around.
+            if not repair or _is_refusal(raw):
+                raise
 
-        out = run_query(safe)
+            record["repair_attempted"] = True
+            record["first_error"] = f"{type(first).__name__}: {first}"
 
-        record["executed"] = True
+            raw = repair_sql(
+                question,
+                raw,
+                str(first),
+                model=model,
+                context=context,
+                include_examples=include_examples,
+                timeout=_gen_timeout(),
+            )
+
+            record["sql"] = raw
+
+            safe = validate(raw, ALLOWED)
+            record["validated"] = True
+
+            out = run_query(safe)
+            record["executed"] = True
+            record["repaired"] = True
+
         record["rows"] = out["row_count"]
 
         if isinstance(expected_sql, str) and expected_sql.strip():
@@ -208,6 +271,7 @@ def evaluate_file(
     use_semantic=True,
     progress=None,
     model=None,
+    repair=True,
 ):
     """Score every question in the gold set.
 
@@ -226,6 +290,7 @@ def evaluate_file(
             include_examples=include_examples,
             use_cache=use_cache,
             use_semantic=use_semantic,
+            repair=repair,
             model=model,
         )
 
@@ -290,6 +355,7 @@ def evaluate_runs(
     use_semantic=True,
     progress=None,
     model=None,
+    repair=True,
 ):
     """Score the gold set ``runs`` times and keep every run's numbers.
 
@@ -312,6 +378,7 @@ def evaluate_runs(
             include_examples=include_examples,
             use_cache=use_cache,
             use_semantic=use_semantic,
+            repair=repair,
             progress=progress,
             model=model,
         )
@@ -431,6 +498,14 @@ def main(argv=None) -> int:
         action="store_true",
         help="reuse cached SQL, which makes an interrupted single run resumable",
     )
+    parser.add_argument(
+        "--no-repair",
+        action="store_true",
+        help=(
+            "do not give a failed query one more attempt with the error it "
+            "failed with"
+        ),
+    )
     args = parser.parse_args(argv)
 
     load_dotenv()
@@ -448,10 +523,24 @@ def main(argv=None) -> int:
         use_cache=use_cache,
         progress=_print_progress,
         model=args.model,
+        repair=not args.no_repair,
     )
 
     print()
     print(f"model: {summaries[0]['model']}")
+
+    if args.runs == 1:
+        # Two back-to-back runs of an identical configuration disagreed on
+        # four of 46 questions on this hardware, a swing of 0.087 available to
+        # any single run. Printing a bare number invites a comparison it
+        # cannot support, so the caveat travels with it rather than living in
+        # a README paragraph nobody reads next to the figure.
+        print(
+            "\nONE RUN. Temperature 0 is not reproducible here: identical "
+            "configurations have disagreed on four of 46 questions. Treat a "
+            "difference smaller than about a tenth as noise, and use --runs 3 "
+            "for anything you intend to publish."
+        )
 
     print()
 
