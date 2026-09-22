@@ -16,7 +16,15 @@ RUN apt-get update \
 # Copy requirements first so Docker can cache the dependency layer.
 COPY requirements.txt .
 
-RUN pip install -r requirements.txt \
+# The CPU wheel index for torch, which sentence-transformers pulls in. Without
+# it pip takes the default build, which carries the CUDA runtime and about two
+# gigabytes of NVIDIA libraries into a container that has no GPU. The first
+# build of this image died inside that install with pip exit code 2, out of
+# memory on a machine with under a gigabyte free. CI already used this index;
+# the Dockerfile did not, and an image that only builds on the CI runner is
+# not a deployable image.
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements.txt \
     && apt-get purge -y build-essential \
     && apt-get autoremove -y
 

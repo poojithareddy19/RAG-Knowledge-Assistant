@@ -28,4 +28,5 @@ docker-compose.override.yml
 # numbers worth keeping are written up in README.md rather than left as a CSV
 # nobody can date.
 eval_*.log
+build_*.log
 data/evaluation/sql_eval_*.csv

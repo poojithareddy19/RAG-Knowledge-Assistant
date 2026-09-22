@@ -412,7 +412,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
 Naming both files is deliberate; `docker-compose.override.yml` is local-only and would serve the working tree. [`docs/deployment.md`](docs/deployment.md) covers loading the archive into a fresh volume, the settings whose defaults are committed passwords, and why Ollama is not a container here.
 
-**This has not been deployed.** The arrangement is validated with `docker compose config` and the images have not been built on the machine that wrote them, which is short of disk. The first deploy will be the first test, and that is the last item in the problem statement still on paper.
+**Verified, not hosted.** Both images build (API 3.4 GB, front end 74 MB), the arrangement comes up with only nginx published, and a request traverses nginx to the API to the database on the real archive: `/api/health` reports 175,364 measurements through the proxy, and a question through the same path returns the scope gate's refusal in eight seconds. CI builds both images on every push and publishes them to `ghcr.io/poojithareddy19/floatchat-{api,web}` on `main`, tagged with the commit.
+
+Proving it found three defects that `docker compose config` had passed: the Dockerfile pulled the CUDA build of torch into a GPU-less container and died out of memory; nginx resolved the API's hostname at startup and refused to start without it; and the front end's healthcheck asked `localhost`, got IPv6, and reported a working server as down. All three are fixed and written up in [`docs/deployment.md`](docs/deployment.md).
+
+There is no cloud host, by choice. The images are published and the arrangement is proven; putting it on a paid instance is a decision, not a remaining task.
 
 ## Testing
 
@@ -864,7 +868,7 @@ Done:
 - [x] A repair attempt on a query that failed, given the error it failed with, with refusals never repaired
 - [x] Cross-platform joins rejected in the validator, including the trivial-subquery form a model found to get round the first version
 - [x] A React front end over the API, which is the second client the response contract needed
-- [x] A production compose arrangement, an nginx image for the front end and a deployment guide, none of it yet run on a server
+- [x] The Docker stage, verified: both images build, the production compose comes up, and a request traverses nginx to the API to the database on real data. CI builds both images on every push and publishes them to GHCR on main
 - [x] GitHub Actions running the suite and the linter on 3.11 and 3.12
 - [x] A single run now says so in its own output, rather than leaving the caveat to a README paragraph
 - [x] Both models on the same 67 questions, which retracted an earlier claim: qwen's advantage on the window bucket was noise, and both score 0.167 there
@@ -875,7 +879,7 @@ Not done, honestly:
 - [ ] Persist conversation history, which currently dies with the process
 - [ ] A judge that is not the model under test, which is the honest limit of the generation scores
 - [ ] A larger model on the same 67 questions. Three prompt attempts, a repair loop and a second 7B model have all left the window bucket at 0.167, so the next honest experiment is more capacity rather than better wording
-- [ ] Actually deploy it. The compose arrangement, the nginx image and the guide exist and have never been run on a server, which is the last part of the problem statement still on paper
+- [ ] A cloud host. Deliberately not: the images are published and the arrangement is proven locally, and putting it on a paid instance is a decision rather than a task
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
 - [ ] Hybrid search (BM25 + dense), which would likely help the exact-phrase manual questions most
 - [ ] OCR path for scanned PDFs
