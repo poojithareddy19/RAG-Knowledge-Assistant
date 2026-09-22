@@ -51,3 +51,29 @@ How many measurements have a backscatter reading?,bgc,"SELECT count(*) FROM meas
 How many floats measure dissolved oxygen?,bgc,"SELECT count(DISTINCT p.float_id) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id WHERE m.oxygen_umol_kg IS NOT NULL"
 What is the seafloor depth beneath each float?,unanswerable,
 What is the current speed at 1000 decibars?,unanswerable,
+How many drifting buoys are in the database?,drifter,SELECT count(*) FROM drifters
+How many drifter observations have been recorded?,drifter,SELECT count(*) FROM drifter_observations
+What is the earliest drifter observation date?,drifter,SELECT min(obs_time) FROM drifter_observations
+How many drifter observations are from the Bay of Bengal?,drifter,SELECT count(*) FROM drifter_observations WHERE region = 'Bay of Bengal'
+How many buoys are of type SVPB?,drifter,SELECT count(*) FROM drifters WHERE buoy_type = 'SVPB'
+Which buoy reported the most observations?,drifter,"SELECT buoy_id FROM drifter_observations GROUP BY buoy_id ORDER BY count(*) DESC, buoy_id LIMIT 1"
+How many observations come from SVPB buoys?,drifter,SELECT count(*) FROM drifter_observations o JOIN drifters d ON d.buoy_id = o.buoy_id WHERE d.buoy_type = 'SVPB'
+What is the mean sea surface temperature the buoys recorded in each region?,drifter,"SELECT o.region, avg(o.sst_c) FROM drifter_observations o WHERE o.sst_c IS NOT NULL GROUP BY o.region ORDER BY o.region"
+Number of drifter observations per month,drifter,"SELECT date_trunc('month', obs_time) AS mth, count(*) FROM drifter_observations GROUP BY mth ORDER BY mth"
+How fast is the surface current on average in the Arabian Sea?,drifter,"SELECT avg(sqrt(power(eastward_velocity_m_s, 2) + power(northward_velocity_m_s, 2))) FROM drifter_observations WHERE region = 'Arabian Sea' AND eastward_velocity_m_s IS NOT NULL AND northward_velocity_m_s IS NOT NULL"
+What is the fastest surface current the buoys recorded?,drifter,"SELECT max(sqrt(power(eastward_velocity_m_s, 2) + power(northward_velocity_m_s, 2))) FROM drifter_observations WHERE eastward_velocity_m_s IS NOT NULL AND northward_velocity_m_s IS NOT NULL"
+Rank the regions by the mean sea surface temperature the buoys recorded,drifter,"SELECT o.region, rank() OVER (ORDER BY avg(o.sst_c) DESC) AS rnk FROM drifter_observations o WHERE o.sst_c IS NOT NULL GROUP BY o.region ORDER BY rnk"
+How many buoys reported from more than one region?,drifter,SELECT count(*) FROM (SELECT buoy_id FROM drifter_observations GROUP BY buoy_id HAVING count(DISTINCT region) > 1) m
+Compare the mean surface temperature from the floats with the mean sea surface temperature from the buoys in each region,drifter,"WITH argo AS (
+    SELECT p.region, avg(m.temperature_c) AS float_temp
+    FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id
+    WHERE m.pressure_dbar < 10 AND m.qc_flag = 1 AND m.temperature_c IS NOT NULL
+    GROUP BY p.region
+), buoys AS (
+    SELECT o.region, avg(o.sst_c) AS buoy_temp
+    FROM drifter_observations o WHERE o.sst_c IS NOT NULL GROUP BY o.region
+)
+SELECT argo.region, argo.float_temp, buoys.buoy_temp
+FROM argo JOIN buoys ON buoys.region = argo.region
+ORDER BY argo.region"
+How deep did each drifting buoy dive?,unanswerable,
