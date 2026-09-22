@@ -58,7 +58,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "11"
+PROMPT_VERSION = "12"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -153,6 +153,13 @@ ORDER BY region
 # model wrote the sum: max(eastward_velocity_m_s + northward_velocity_m_s),
 # which is not a speed and is not even an upper bound on one. A rule saying so
 # competes with every other rule in the prompt; the worked query does not.
+#
+# The first version of that example grouped by region, and the model learned
+# the grouping along with the arithmetic: asked for the average in one named
+# region, and for the single fastest current overall, it returned a per-region
+# breakdown both times. Neither question asked for one. So the ungrouped shape
+# is shown too. An example teaches everything it contains, including the parts
+# that were incidental to the reason it was written.
 DRIFTER_EXAMPLE = """=== DRIFTING BUOY EXAMPLE ===
 Question:	Average sea surface temperature from the drifting buoys in each region
 SQL:
@@ -175,6 +182,17 @@ WHERE o.eastward_velocity_m_s IS NOT NULL
   AND o.northward_velocity_m_s IS NOT NULL
 GROUP BY o.region
 ORDER BY o.region
+
+Question:	Average surface current speed in the Bay of Bengal
+SQL:
+SELECT avg(sqrt(
+           power(o.eastward_velocity_m_s, 2)
+           + power(o.northward_velocity_m_s, 2)
+       )) AS mean_current_speed_m_s
+FROM drifter_observations o
+WHERE o.region = 'Bay of Bengal'
+  AND o.eastward_velocity_m_s IS NOT NULL
+  AND o.northward_velocity_m_s IS NOT NULL
 """
 
 FENCE = re.compile(
@@ -244,6 +262,56 @@ def build_prompt(
     return "\n\n".join(sections)
 
 
+REPAIR = """The SQL below was written for the question below and failed. Rewrite it
+so it runs.
+
+Rules:
+- Output exactly one corrected SQL statement and nothing else. No prose, no
+  markdown, no explanation of what went wrong.
+- Every rule you were given the first time still applies.
+- Fix the cause the error names. Do not rewrite the parts that were not at
+  fault, and do not answer a different question because this one is awkward.
+- A derived table is not visible to a sibling derived table. If one subquery
+  needs another's rows, both belong in WITH clauses, or the inner one has to
+  be repeated.
+- If the error says a column does not exist, it does not exist. Find the one
+  that holds what the question asks for, or output UNANSWERABLE if there is
+  none.
+"""
+
+
+def build_repair_prompt(
+    question: str,
+    broken_sql: str,
+    error: str,
+    context: str = "",
+    include_examples: bool = True,
+) -> str:
+    """Assemble the prompt for a second attempt at a query that failed.
+
+    The schema goes back in because the commonest repairable error is a column
+    that does not exist, and a model asked to fix that without the catalog in
+    front of it invents a second one.
+    """
+
+    sections = [
+        REPAIR,
+        f"=== SCHEMA ===\n{build_context(include_examples)}",
+    ]
+
+    if context.strip():
+        sections.append(
+            f"{CONTEXT_RULE}\n=== WHAT IS IN THE DATABASE ===\n{context.strip()}"
+        )
+
+    sections.append(f"=== QUESTION ===\n{question}")
+    sections.append(f"=== THE QUERY THAT FAILED ===\n{broken_sql}")
+    sections.append(f"=== THE ERROR ===\n{error}")
+    sections.append("SQL:")
+
+    return "\n\n".join(sections)
+
+
 def cache_version(
     context: str = "",
     include_examples: bool = True,
@@ -272,6 +340,85 @@ def cache_version(
     ).hexdigest()[:12]
 
     return f"{PROMPT_VERSION}:{digest}"
+
+
+def _complete(prompt: str, model: str | None, timeout: int, predict: int) -> str:
+    """One completion, with the retry that covers a cold model load."""
+
+    base = os.environ.get(
+        "OLLAMA_BASE_URL",
+        "http://localhost:11434",
+    )
+
+    model = model or os.environ.get(
+        "GENERATION__MODEL",
+        "llama3.1:latest",
+    )
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0,
+            "num_predict": predict,
+        },
+    }
+
+    try:
+        response = httpx.post(
+            f"{base}/api/generate",
+            json=payload,
+            timeout=timeout,
+        )
+    except httpx.TimeoutException:
+        # The first call after a restart pays for loading the model into
+        # memory, which on its own can outlast the timeout. By now that load
+        # has finished, so one retry is usually enough.
+        response = httpx.post(
+            f"{base}/api/generate",
+            json=payload,
+            timeout=timeout,
+        )
+
+    response.raise_for_status()
+
+    return _clean(response.json()["response"])
+
+
+def repair_sql(
+    question: str,
+    broken_sql: str,
+    error: str,
+    model: str | None = None,
+    timeout: int = 90,
+    context: str = "",
+    include_examples: bool = True,
+) -> str:
+    """One more attempt at a query that failed, given the error it failed with.
+
+    Not cached. The cache is keyed on the question, and two runs of the same
+    question can fail differently, so a repair keyed that way would serve a fix
+    for an error the query did not make.
+
+    Deliberately one attempt rather than a loop. A model that cannot use the
+    error message the first time does not usually do better with the same
+    message again, and the wall clock on this hardware makes each try
+    expensive. Whether one is worth it is measured, not assumed.
+    """
+
+    return _complete(
+        build_repair_prompt(
+            question,
+            broken_sql,
+            error,
+            context,
+            include_examples,
+        ),
+        model,
+        timeout,
+        400,
+    )
 
 
 def generate_sql(
@@ -309,11 +456,6 @@ def generate_sql(
             else declined
         )
 
-    base = os.environ.get(
-        "OLLAMA_BASE_URL",
-        "http://localhost:11434",
-    )
-
     model = model or os.environ.get(
         "GENERATION__MODEL",
         "llama3.1:latest",
@@ -336,42 +478,15 @@ def generate_sql(
                 else hit
             )
 
-    prompt = build_prompt(
-        question,
-        context,
-        include_examples,
-    )
-
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0,
-            "num_predict": 400,
-        },
-    }
-
-    try:
-        response = httpx.post(
-            f"{base}/api/generate",
-            json=payload,
-            timeout=timeout,
-        )
-    except httpx.TimeoutException:
-        # The first call after a restart pays for loading the model into
-        # memory, which on its own can outlast the timeout. By now that load
-        # has finished, so one retry is usually enough.
-        response = httpx.post(
-            f"{base}/api/generate",
-            json=payload,
-            timeout=timeout,
-        )
-
-    response.raise_for_status()
-
-    sql = _clean(
-        response.json()["response"]
+    sql = _complete(
+        build_prompt(
+            question,
+            context,
+            include_examples,
+        ),
+        model,
+        timeout,
+        400,
     )
 
     # Cache successful SQL, including UNANSWERABLE decisions.
