@@ -143,3 +143,77 @@ def out_of_scope(question: str) -> str | None:
             return reason
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# When a failure is the answer
+# ---------------------------------------------------------------------------
+
+_MISSING_COLUMN = re.compile(
+    r'column\s+"?(?:([a-z_][a-z0-9_]*)\.)?([a-z_][a-z0-9_]*)"?\s+does not exist',
+    re.I,
+)
+
+_TABLE_REF = re.compile(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", re.I)
+
+
+def error_is_the_answer(sql, error, column_catalog, platforms):
+    """Whether a failed query failed because the data is not there.
+
+    A repair attempt is given the error and told to fix it, which is right when
+    the error is a mistake and catastrophic when it is a fact. Asked how deep
+    each drifting buoy dived, the model wrote ``MIN(o.pressure_dbar)`` on
+    ``drifter_observations``, which failed because a buoy has no depth. The
+    repair then substituted sea surface temperature and kept the aliases:
+
+        MIN(o.sst_c) AS min_pressure,
+        MAX(o.sst_c) AS max_pressure
+
+    Three rows of temperatures labelled as pressures, returned as a confident
+    answer. The first query was right to fail.
+
+    So: if the missing column exists nowhere on the platform the query reads,
+    the schema has answered the question and there is nothing to repair. If it
+    exists on that platform and the query reached it through the wrong alias,
+    that is a mistake and the repair is worth a try. `p.pressure_dbar` on the
+    Argo tables is the second kind; `o.pressure_dbar` on the buoys is the first.
+
+    Returns a reason to refuse, or None to let the repair proceed.
+    """
+
+    match = _MISSING_COLUMN.search(str(error))
+
+    if not match or not column_catalog:
+        return None
+
+    column = match.group(2)
+
+    tables = {t.lower() for t in _TABLE_REF.findall(sql or "")}
+
+    # Which platforms this query actually reads. A query touching neither is
+    # not something this rule can judge.
+    families = {
+        family
+        for family, members in platforms.items()
+        if tables & {m.lower() for m in members}
+    }
+
+    if not families:
+        return None
+
+    reachable = {
+        col.lower()
+        for family in families
+        for table in platforms[family]
+        for col in column_catalog.get(table, ())
+    }
+
+    if column.lower() in reachable:
+        return None
+
+    return (
+        f"there is no {column} on "
+        + " or ".join(sorted(families))
+        + " data, so that quantity is not recorded for the platform this "
+        "question is about"
+    )

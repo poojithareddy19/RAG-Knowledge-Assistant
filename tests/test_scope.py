@@ -1,6 +1,6 @@
 import pytest
 
-from src.sqlgen.scope import out_of_scope
+from src.sqlgen.scope import error_is_the_answer, out_of_scope
 
 
 @pytest.mark.parametrize(
@@ -81,3 +81,101 @@ def test_empty_question_is_not_refused_here():
     layer. This gate only knows about quantities."""
     assert out_of_scope("") is None
     assert out_of_scope("   ") is None
+
+
+# --- when a failure is the answer ------------------------------------------
+
+CATALOG = {
+    "measurements": {"pressure_dbar", "temperature_c", "profile_id"},
+    "profiles": {"profile_id", "float_id", "region", "obs_time"},
+    "floats": {"float_id", "platform"},
+    "drifters": {"buoy_id", "buoy_type"},
+    "drifter_observations": {"buoy_id", "sst_c", "region", "obs_time"},
+}
+
+FAMILIES = {
+    "argo": frozenset({"floats", "profiles", "measurements"}),
+    "drifter": frozenset({"drifters", "drifter_observations"}),
+}
+
+
+def test_a_column_the_platform_does_not_have_is_not_repaired():
+    """The failure that started this: a buoy has no depth.
+
+    Left to repair, the model substituted sea surface temperature and kept the
+    aliases min_pressure and max_pressure, answering "how deep did each buoy
+    dive" with three rows of temperatures.
+    """
+    reason = error_is_the_answer(
+        "SELECT MIN(o.pressure_dbar) FROM drifter_observations o",
+        "UndefinedColumn: column o.pressure_dbar does not exist",
+        CATALOG,
+        FAMILIES,
+    )
+
+    assert reason is not None
+    assert "pressure_dbar" in reason
+
+
+def test_a_wrong_alias_on_a_real_column_is_still_repaired():
+    """pressure_dbar exists on the Argo tables; the query reached it through
+    the wrong alias. That is a mistake, and repairing it is the point."""
+    assert (
+        error_is_the_answer(
+            "SELECT p.pressure_dbar FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id",
+            "UndefinedColumn: column p.pressure_dbar does not exist",
+            CATALOG,
+            FAMILIES,
+        )
+        is None
+    )
+
+
+def test_an_unqualified_column_is_judged_the_same_way():
+    assert (
+        error_is_the_answer(
+            "SELECT COUNT(DISTINCT float_id) FROM measurements m",
+            'UndefinedColumn: column "float_id" does not exist',
+            CATALOG,
+            FAMILIES,
+        )
+        is None
+    )
+
+
+def test_a_quantity_on_no_platform_is_not_repaired():
+    reason = error_is_the_answer(
+        "SELECT o.wind_speed FROM drifter_observations o",
+        "UndefinedColumn: column o.wind_speed does not exist",
+        CATALOG,
+        FAMILIES,
+    )
+
+    assert reason is not None
+
+
+def test_an_error_that_is_not_about_a_column_is_left_alone():
+    """Syntax errors and missing FROM entries are ordinary mistakes."""
+    assert (
+        error_is_the_answer(
+            "SELECT 1 FROM measurements m",
+            'UndefinedTable: missing FROM-clause entry for table "p"',
+            CATALOG,
+            FAMILIES,
+        )
+        is None
+    )
+
+
+def test_without_a_catalog_the_guard_does_not_guess():
+    """No catalog means the check cannot be made, and the repair proceeds as
+    it did before the guard existed."""
+    assert (
+        error_is_the_answer(
+            "SELECT MIN(o.pressure_dbar) FROM drifter_observations o",
+            "UndefinedColumn: column o.pressure_dbar does not exist",
+            {},
+            FAMILIES,
+        )
+        is None
+    )

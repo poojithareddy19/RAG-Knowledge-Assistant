@@ -102,6 +102,13 @@ sql:
   # can take most of this on its own.
   gen_timeout_seconds: 120
 
+  # One more attempt at a query that failed, given the error it failed with.
+  # Never applied to a refusal, and never when the error says the column does
+  # not exist on the platform the query reads: that failure is the schema
+  # answering the question, and a repair told to fix it will find something
+  # else to put under the same alias.
+  repair: true
+
 semantic:
   # Natural-language summaries of what the measurements tables hold, retrieved
   # and handed to the SQL generator so it is not guessing what exists.

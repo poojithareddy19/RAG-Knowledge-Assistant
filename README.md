@@ -6,7 +6,7 @@ Two kinds of question, one system. **What does this data mean?** is answered fro
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.533 execution accuracy](#results) on 67 SQL questions covering both platforms, [6/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.567 execution accuracy](#results) on 67 SQL questions across two models, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -391,6 +391,29 @@ uvicorn src.api.main:app --reload
 
 Both UIs show the same two things the answer depends on: for documents, the retrieved chunks with similarity scores and the exact prompt sent to the model; for data, the SQL. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
 
+### The React front end
+
+A second client over the same API, in [`web/`](web/). The Streamlit page reaches past the API into the pipeline directly, so it cannot find the places where the response is awkward to consume; a UI written against `AskResponse` can.
+
+```bash
+uvicorn src.api.main:app --reload    # the service it talks to
+cd web && npm install && npm run dev
+```
+
+Same principle as the dashboard: the route, the SQL and the citations travel with every answer, and a refusal renders as a result rather than an error.
+
+## Deploying
+
+Three containers, with nginx the only thing listening and the database and API internal:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Naming both files is deliberate; `docker-compose.override.yml` is local-only and would serve the working tree. [`docs/deployment.md`](docs/deployment.md) covers loading the archive into a fresh volume, the settings whose defaults are committed passwords, and why Ollama is not a container here.
+
+**This has not been deployed.** The arrangement is validated with `docker compose config` and the images have not been built on the machine that wrote them, which is short of disk. The first deploy will be the first test, and that is the last item in the problem statement still on paper.
+
 ## Testing
 
 ```bash
@@ -525,29 +548,29 @@ Two models, both local through Ollama, on the same questions and the same prompt
 
 | Metric | `llama3.1:8b` | `qwen2.5-coder:7b` |
 | ------------------------- | ----- | ----- |
-| **Execution accuracy**    | **0.533** | **0.522** |
-| Validation pass rate      | 0.950 | 1.000 |
-| Execution rate            | 0.883 | 0.891 |
-| **Correct refusal rate**  | **0.857 (6/7)** | 1.000 (6/6) |
-| False refusal rate        | 0.050 | 0.000 |
-| Median latency            | 37.7 s | 46.5 s |
+| **Execution accuracy**    | **0.567** | **0.483** |
+| Validation pass rate      | 0.983 | 0.967 |
+| Execution rate            | 0.933 | 0.850 |
+| **Correct refusal rate**  | **1.000 (7/7)** | 0.857 (6/7) |
+| False refusal rate        | 0.017 | 0.050 |
+| Median latency            | 31.5 s | 50.2 s |
 
 | Bucket | Questions | `llama3.1:8b` | `qwen2.5-coder:7b` |
 | ------------ | --- | ----- | ----- |
-| filter       | 8   | 0.875 | 0.625 |
-| easy         | 8   | 0.750 | 0.625 |
-| groupby      | 6   | 0.667 | **0.833** |
+| filter       | 8   | 0.875 | 0.500 |
+| easy         | 8   | 0.875 | 0.250 |
+| groupby      | 6   | 0.833 | 0.833 |
 | join         | 8   | 0.500 | 0.500 |
-| drifter      | 14  | 0.429 | not run |
+| drifter      | 14  | 0.429 | **0.571** |
 | qc           | 5   | 0.400 | 0.400 |
-| bgc          | 5   | 0.400 | 0.200 |
-| window       | 6   | 0.167 | 0.333 |
-| unanswerable | 7   | 6/7 refused | 6/6 refused, on the smaller set |
+| bgc          | 5   | 0.400 | **0.600** |
+| window       | 6   | 0.167 | 0.167 |
+| unanswerable | 7   | **7/7 refused** | 6/7 refused |
 
-The llama3.1 column is one run on the current prompt and the 67-question set,
-taken with nothing else using the machine. qwen has not been run on the larger
-set at all, so its column describes 52 different questions and is left here for
-the buckets it does cover rather than as a comparison.
+Both columns are one run each on the same 67 questions, the same prompt and the
+same timeout, taken back to back with nothing else using the machine. This is
+the first time the two models have been compared on equal terms; the earlier
+qwen figures were measured on a different, smaller set.
 
 Six of the seven unanswerable questions are refused by the [scope gate](#closing-it-without-the-model)
 and will not move between runs or between models. The seventh is the one added
@@ -627,6 +650,35 @@ A fourth failure is worth separating because it is not about buoys at all. Asked
 
 **None of this was visible before the questions existed.** The A/B that cleared the worked example of costing accuracy was run on the 52-question set, where the example is shown to no question at all, so it could not have detected the over-grouping it causes. A benchmark that does not cover a feature will report that the feature is fine.
 
+#### The window bucket is a ceiling, and here is the evidence
+
+Three independent attempts to move `window` off 0.167, and a fourth line of evidence that it is not the prompt:
+
+| Attempt | Result |
+| --- | --- |
+| Three worked examples, one per window function, against these exact tables | 0.333 to 0.333 on the set of the day; no movement |
+| A repair attempt given the error the query failed with | no window question recovered |
+| A second model, `qwen2.5-coder:7b`, on the same 67 questions | **0.167, identical** |
+
+The third is the one that settles it. A general 8B model and a 7B code specialist, different architectures and different training, produce the same score on the same six questions. Whatever is failing is not something one model knows and the other does not.
+
+**qwen's earlier advantage did not survive a fair comparison.** On the 52-question set it scored 0.333 on this bucket, double llama, and that was quoted here as a model difference. Measured on the same questions with the same prompt it is 0.167. A single-run difference that looked like a property of the model was noise, which is what the caveat now printed above every single-run result exists to warn about. Retracting it is cheaper than defending it.
+
+So the reasonable conclusion is that window functions over this schema are beyond a 7-8B model at this quantisation, and the next thing worth trying is a larger model rather than a better prompt. That is a hardware question, and it is on the roadmap rather than in this section.
+
+#### Neither model is better, they are wrong about different things
+
+| Bucket | `llama3.1:8b` | `qwen2.5-coder:7b` |
+| --- | --- | --- |
+| easy | **0.875** | 0.250 |
+| filter | **0.875** | 0.500 |
+| drifter | 0.429 | **0.571** |
+| bgc | 0.400 | **0.600** |
+
+qwen is 0.084 worse overall and better on the two hardest data buckets. It collapses on `easy`, which is eight questions of the form "how many floats are in the database", and some of that plausibly belongs to quantisation rather than to the model: qwen is `q3_K_M`, a step below llama's `Q4_K_M`, because the larger file would not fit on the disk it was first run from.
+
+Picking one is a trade rather than an upgrade, and the refusal row is no longer part of it: the [scope gate](#closing-it-without-the-model) declines before either model is called, so that number is the same whichever is shipped.
+
 #### Did the worked examples move the window bucket?
 
 No.
@@ -655,7 +707,7 @@ So the earlier conclusion holds and now has evidence behind it: **that fabricati
 
 That conclusion was right and is now moot. Both halves of it assumed the choice was which model to ask, and the [scope gate](#closing-it-without-the-model) does not ask one: `llama3.1:8b` refuses the seafloor question now, not because it learned anything but because the question no longer reaches it. The lesson worth keeping is the one the section was written to make, that a fabrication surviving three rewordings is telling you something about where the rule belongs, rather than asking for a fourth.
 
-Validation pass rate is 0.950 while accuracy is 0.533. Nearly every generated query was well formed, safe and executable, and almost half still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
+Validation pass rate is 0.983 while accuracy is 0.567. Nearly every generated query was well formed, safe and executable, and four in ten still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
 
 #### On repeated runs
 
@@ -778,7 +830,7 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
-**Evaluation.** Text-to-SQL scores 0.533 execution accuracy over 67 questions on the shipped model. The second model has only been run on the earlier 52-question set, where it scored 0.522, so the two are not comparable. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 and the new drifter bucket 3 in 7, and worked examples aimed at both moved one and actively hurt the other. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. Two of the three false refusals in the headline are the model timing out rather than declining, which this hardware produces and the harness cannot tell apart. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.567 execution accuracy over 67 questions on the shipped model and 0.483 on a second one, measured on the same questions. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 on **both** models, and worked examples, a repair attempt and a change of model have each failed to move it. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. The repair loop is worth 2 recovered queries of 6 attempts on llama and cannot touch the 21 questions that fail by returning the wrong rows without an error. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 
@@ -812,14 +864,18 @@ Done:
 - [x] A repair attempt on a query that failed, given the error it failed with, with refusals never repaired
 - [x] Cross-platform joins rejected in the validator, including the trivial-subquery form a model found to get round the first version
 - [x] A React front end over the API, which is the second client the response contract needed
+- [x] A production compose arrangement, an nginx image for the front end and a deployment guide, none of it yet run on a server
 - [x] GitHub Actions running the suite and the linter on 3.11 and 3.12
 - [x] A single run now says so in its own output, rather than leaving the caveat to a README paragraph
+- [x] Both models on the same 67 questions, which retracted an earlier claim: qwen's advantage on the window bucket was noise, and both score 0.167 there
+- [x] A repair guard, after the repair loop answered how deep the buoys dived with sea surface temperature aliased to min_pressure
 
 Not done, honestly:
 
 - [ ] Persist conversation history, which currently dies with the process
 - [ ] A judge that is not the model under test, which is the honest limit of the generation scores
-- [ ] Deploy the API and the front end somewhere, the last part of the problem statement still on paper
+- [ ] A larger model on the same 67 questions. Three prompt attempts, a repair loop and a second 7B model have all left the window bucket at 0.167, so the next honest experiment is more capacity rather than better wording
+- [ ] Actually deploy it. The compose arrangement, the nginx image and the guide exist and have never been run on a server, which is the last part of the problem statement still on paper
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
 - [ ] Hybrid search (BM25 + dense), which would likely help the exact-phrase manual questions most
 - [ ] OCR path for scanned PDFs

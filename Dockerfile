@@ -23,6 +23,11 @@ RUN pip install -r requirements.txt \
 COPY src/ ./src/
 COPY db/ ./db/
 COPY config.yaml ./
+# The Streamlit page and the basemaps it needs. One image runs either process:
+# the API by default, the dashboard by overriding the command. Keeping them in
+# one image means the two cannot drift onto different versions of src/.
+COPY app.py ./
+COPY static/ ./static/
 
 EXPOSE 8000
 

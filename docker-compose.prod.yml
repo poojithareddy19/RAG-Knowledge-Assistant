@@ -1,0 +1,96 @@
+# Production arrangement. Run it with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Naming both files rather than relying on docker-compose.override.yml is
+# deliberate: the override is local-only and carries bind mounts and a
+# different published port, and picking it up on a server would serve the
+# developer's working tree.
+#
+# Ollama is not a service here. It needs the host's memory and, where there is
+# one, the host's GPU, so it runs on the host and the API reaches it through
+# host.docker.internal. Point OLLAMA_BASE_URL at a managed endpoint instead if
+# you have one.
+
+services:
+  db:
+    restart: unless-stopped
+    # No published port. Nothing outside the compose network should reach the
+    # database directly, and in development it is published only because the
+    # loaders and the evaluation harness run on the host.
+    ports: !override []
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Init scripts run only on an empty volume, so leaving them mounted is
+      # harmless on an existing database and necessary on a new one.
+      - ./db:/docker-entrypoint-initdb.d:ro
+
+  api:
+    restart: unless-stopped
+    build: .
+    environment:
+      DATABASE__URL: ${DATABASE_URL:-postgresql://gda:gda_local_pw@db:5432/gda}
+      DATABASE__READONLY_URL: ${DATABASE_READONLY_URL:-postgresql://gda_ro:gda_ro_pw@db:5432/gda}
+      # OLLAMA_BASE_URL is deliberately not set here. Compose interpolates
+      # ${...} from .env, where it is http://localhost:11434 because that is
+      # right for the loaders and the harness, which run on the host. Inside a
+      # container localhost is the container, so re-declaring it here would
+      # quietly point the API at itself. The base compose file already sets
+      # host.docker.internal, and that value stands. To reach a remote model
+      # server, set OLLAMA_URL and uncomment the line below.
+      # OLLAMA_BASE_URL: ${OLLAMA_URL}
+      GENERATION__PROVIDER: ollama
+      GENERATION__MODEL: ${GENERATION_MODEL:-llama3.1:latest}
+      VECTORSTORE__BACKEND: pgvector
+    # Not published. nginx is the only way in, so the API is not separately
+    # exposed and there is one place to put a certificate.
+    ports: !override []
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    restart: unless-stopped
+    build:
+      context: ./web
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # The Streamlit dashboard, from the same image as the API so the two cannot
+  # drift. Optional: bring it up with --profile dashboard. It carries the
+  # evaluation and monitoring pages, which are for whoever runs this rather
+  # than for whoever asks it questions.
+  dashboard:
+    profiles: ["dashboard"]
+    restart: unless-stopped
+    build: .
+    environment:
+      DATABASE__URL: ${DATABASE_URL:-postgresql://gda:gda_local_pw@db:5432/gda}
+      DATABASE__READONLY_URL: ${DATABASE_READONLY_URL:-postgresql://gda_ro:gda_ro_pw@db:5432/gda}
+      # Literal, not interpolated, for the reason given on the api service.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      GENERATION__PROVIDER: ollama
+      GENERATION__MODEL: ${GENERATION_MODEL:-llama3.1:latest}
+      VECTORSTORE__BACKEND: pgvector
+    command:
+      - streamlit
+      - run
+      - app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -51,7 +51,9 @@ import pandas as pd
 
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
-from src.sqlgen.validator import SQLRejected, validate
+from src.sqlgen.schema_context import load_column_catalog
+from src.sqlgen.scope import error_is_the_answer
+from src.sqlgen.validator import PLATFORMS, SQLRejected, validate
 from src.utils.config import get_config
 
 ALLOWED = ["floats", "profiles", "measurements", "drifters", "drifter_observations"]
@@ -116,6 +118,18 @@ def _expected_rows(expected_sql):
     )["rows"]
 
 
+def _catalog():
+    """Real columns, read from the live database, or empty if unreachable.
+
+    Empty means the repair guard cannot judge and lets the repair proceed,
+    which is the behaviour that existed before the guard.
+    """
+    try:
+        return load_column_catalog()
+    except Exception:
+        return {}
+
+
 def _gen_timeout():
     """The wall clock the app allows a generation, read from the same config.
 
@@ -175,6 +189,11 @@ def evaluate_one(
         "repair_attempted": False,
         "repaired": False,
         "first_error": None,
+        # A refusal is the safety path declining, whichever layer declined.
+        # Kept separate from `validated` because the two came apart: the repair
+        # guard declines after the validator has already passed the query, so a
+        # question can be correctly refused with validated still true.
+        "refused": False,
     }
 
     try:
@@ -206,6 +225,23 @@ def evaluate_one(
             # correct answer rather than a failure to work around.
             if not repair or _is_refusal(raw):
                 raise
+
+            # A failure can be the answer. If the column the query wanted does
+            # not exist on the platform it reads, the schema has said the data
+            # is not there, and handing that to a repair asks it to find
+            # something else to put under the same alias. It did exactly that
+            # once: asked how deep the buoys dived, the repair swapped sea
+            # surface temperature in and kept the aliases min_pressure and
+            # max_pressure.
+            unrepairable = error_is_the_answer(
+                raw,
+                first,
+                _catalog(),
+                PLATFORMS,
+            )
+
+            if unrepairable:
+                raise SQLRejected(unrepairable) from first
 
             record["repair_attempted"] = True
             record["first_error"] = f"{type(first).__name__}: {first}"
@@ -239,6 +275,7 @@ def evaluate_one(
 
     except SQLRejected as exc:
         record["error"] = f"rejected: {exc}"
+        record["refused"] = True
 
     except Exception as exc:
         record["error"] = f"{type(exc).__name__}: {exc}"
@@ -314,8 +351,8 @@ def evaluate_file(
         "execution_accuracy": _rate(answerable["matched"]),
         "validation_pass_rate": _rate(answerable["validated"]),
         "execution_rate": _rate(answerable["executed"]),
-        "false_refusal_rate": _rate(~answerable["validated"]),
-        "correct_refusal_rate": _rate(~unanswerable["validated"]),
+        "false_refusal_rate": _rate(_refused(answerable)),
+        "correct_refusal_rate": _rate(_refused(unanswerable)),
         "median_latency_ms": round(
             statistics.median(df["latency_ms"]),
             1,
@@ -341,6 +378,24 @@ def _default_model() -> str:
     import os
 
     return os.environ.get("GENERATION__MODEL", "llama3.1:latest")
+
+
+def _refused(frame):
+    """Whether each row was declined by the safety path.
+
+    This was `~validated`, which read the validator's verdict as the whole
+    answer. That stopped being true when the repair guard landed: it declines
+    after the validator has already passed a query, because the refusal comes
+    from the execution error rather than from the SQL's shape. A question
+    refused that way was being scored as answered.
+
+    Falls back to the old reading for result files written before the flag
+    existed, so an old CSV still summarises rather than raising.
+    """
+    if "refused" in frame.columns:
+        return frame["refused"].astype(bool)
+
+    return ~frame["validated"].astype(bool)
 
 
 def _rate(series):

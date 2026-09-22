@@ -45,6 +45,11 @@ class AskResponse(BaseModel):
     context_used: list[str] = []
     generated_sql: str | None = None
     sql_cached: bool | None = None
+    # True when the first query failed and this is the second attempt,
+    # written after the error was fed back. The SQL shown is then not
+    # what the model first produced, which a client comparing it against
+    # the question should be able to see.
+    sql_repaired: bool | None = None
     columns: list[str] | None = None
     rows: list[list[Any]] | None = None
     row_count: int | None = None

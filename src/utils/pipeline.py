@@ -44,7 +44,7 @@ from src.router.rewriter import rewrite
 from src.router.translator import from_english, to_english
 from src.semantic.index import SemanticIndex, Summary, as_context
 from src.sqlgen.executor import run_query
-from src.sqlgen.generator import generate_sql
+from src.sqlgen.generator import generate_sql, repair_sql
 from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.validator import SQLRejected, validate
 from src.utils.config import get_config
@@ -54,6 +54,17 @@ from src.utils.schemas import Answer, Chunk
 def _first_line(exc: Exception) -> str:
     """The readable part of an exception, without trailing detail blocks."""
     return str(exc).strip().splitlines()[0].strip()
+
+
+def _repair_refusal(sql, error, column_catalog):
+    """Why this failure must not be repaired, or None."""
+    from src.sqlgen.scope import error_is_the_answer
+    from src.sqlgen.validator import PLATFORMS
+
+    try:
+        return error_is_the_answer(sql, error, column_catalog, PLATFORMS)
+    except Exception:
+        return None
 
 
 class RAGService:
@@ -442,52 +453,85 @@ class RAGService:
                 reason=f"sql generation failed: {_first_line(exc)}",
             )
 
-        try:
-            safe_sql = validate(
-                raw_sql,
+        def _attempt(sql):
+            """Validate and run one candidate query."""
+            safe = validate(
+                sql,
                 allowed_tables=self.cfg.sql.allowed_tables,
                 max_limit=self.cfg.sql.max_rows,
                 default_limit=self.cfg.sql.default_limit,
                 column_catalog=self._column_catalog(),
             )
-        except SQLRejected as exc:
-            return {
-                "answer": (
-                    "I could not answer that from the "
-                    "measurements database. "
-                    f"Reason: {exc}"
-                ),
-                "answered": False,
-                "refused": True,
-                "generated_sql": raw_sql,
-                "sql_cached": cached,
-                "confidence": 0.0,
-                "reason": str(exc),
-            }
 
-        try:
-            result = run_query(
-                safe_sql,
+            return safe, run_query(
+                safe,
                 timeout_ms=self.cfg.sql.timeout_ms,
             )
-        except Exception as exc:
-            # Postgres errors carry a multi-line caret diagram that means
-            # nothing to a reader of the web page. Keep the first line.
-            detail = _first_line(exc)
 
-            return {
-                "answer": (
-                    "The query was accepted but the database rejected it: "
-                    f"{detail}"
-                ),
-                "answered": False,
-                "refused": True,
-                "generated_sql": safe_sql,
-                "sql_cached": cached,
-                "confidence": 0.0,
-                "reason": detail,
-                "error": detail,
-            }
+        repaired = False
+
+        try:
+            safe_sql, result = _attempt(raw_sql)
+        except Exception as first:
+            # One more attempt, given the error the query failed with. The
+            # benchmark has had this since it was written, and the app had
+            # not, which made the published numbers describe a system nobody
+            # was using. They match now.
+            declined = isinstance(first, SQLRejected)
+
+            reason = _repair_refusal(raw_sql, first, self._column_catalog())
+
+            if declined or reason or not self.cfg.sql.get("repair", True):
+                # A refusal is not repaired, and neither is a failure that is
+                # itself the answer: a column missing from the platform the
+                # query reads means the data is not there, and a repair told
+                # to fix that will find something else to put under the same
+                # alias. It did exactly that once, answering how deep the
+                # buoys dived with sea surface temperature aliased to
+                # min_pressure.
+                detail = reason or _first_line(first)
+
+                return {
+                    "answer": (
+                        "I could not answer that from the measurements "
+                        f"database. Reason: {detail}"
+                    ),
+                    "answered": False,
+                    "refused": True,
+                    "generated_sql": raw_sql,
+                    "sql_cached": cached,
+                    "confidence": 0.0,
+                    "reason": detail,
+                }
+
+            try:
+                raw_sql = repair_sql(
+                    question,
+                    raw_sql,
+                    str(first),
+                    model=self.cfg.sql.get("model"),
+                    timeout=self.cfg.sql.get("gen_timeout_seconds", 90),
+                    context=context,
+                )
+
+                safe_sql, result = _attempt(raw_sql)
+                repaired = True
+            except Exception as second:
+                detail = _first_line(second)
+
+                return {
+                    "answer": (
+                        "The query was accepted but the database rejected "
+                        f"it, and a second attempt failed too: {detail}"
+                    ),
+                    "answered": False,
+                    "refused": True,
+                    "generated_sql": raw_sql,
+                    "sql_cached": cached,
+                    "confidence": 0.0,
+                    "reason": detail,
+                    "error": detail,
+                }
 
         png = None
         kind = None
@@ -512,6 +556,11 @@ class RAGService:
             "refused": False,
             "generated_sql": safe_sql,
             "sql_cached": cached,
+            # The first query failed and this is the second. Surfaced rather
+            # than hidden: the shown SQL is not what the model first wrote,
+            # and a reader comparing it against the question deserves to know
+            # an error was fed back in between.
+            "sql_repaired": repaired,
             "columns": result["columns"],
             "rows": result["rows"][:100],
             "row_count": result["row_count"],
