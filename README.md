@@ -2,11 +2,11 @@
 
 Ask the Argo float archive a question in your own language and get an answer you can check.
 
-Two kinds of question, one system. **What does this data mean?** is answered from the Argo manuals, with the document and page behind every claim. **What does this data say?** is answered by SQL generated against the measurements database, shown to you before you are asked to believe the numbers. A router decides which, so the user asks a question rather than choosing a tool.
+Two kinds of question, one system. **What does this data mean?** is answered from the Argo manuals, with the document and page behind every claim. **What does this data say?** is answered by SQL generated against the measurements database, shown to you before you are asked to believe the numbers. A router decides which, and when a question needs both it answers from both, so the user asks a question rather than choosing a tool.
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.620 execution accuracy](#results) on 52 SQL questions across two models, and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.620 execution accuracy](#results) on 52 SQL questions across two models, and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -61,7 +61,21 @@ The summaries closest to a question are retrieved and handed to the SQL generato
 
 They live in their own table rather than alongside the manual chunks, because a question about what a QC flag means must not retrieve a float summary, and a question about a float must not retrieve a page of the format manual.
 
-The router ([`src/router/classifier.py`](src/router/classifier.py)) tries cheap regex rules first and only pays for a model call on the ambiguous cases. Its fallback route is configurable, so a router outage degrades to a known behaviour rather than an error.
+The router ([`src/router/classifier.py`](src/router/classifier.py)) tries cheap regex rules first and only pays for a model call on the ambiguous cases. Its fallback route is configurable, so a router outage degrades to a known behaviour rather than an error. A fourth route, `both`, is described below.
+
+### Answering from both at once
+
+"What does the QC manual say about a flag of 4, and how many of my profiles have one" is two questions wearing one coat, and for most of this project's life it got one answer. The `both` route answers it from both sources.
+
+The compound question is **split before either backend sees it** ([`src/router/planner.py`](src/router/planner.py)). This is not decoration. Sent whole to the retriever, the counting clause is noise in the embedding; sent whole to the SQL generator, the manual clause invites a join against a table that does not exist. Each backend answers its own half, and the halves are rejoined by a synthesis step ([`src/generation/synthesis.py`](src/generation/synthesis.py)).
+
+That synthesis step is the only place in the project where a model is shown two sources at once, which makes it the only place that can invent a relationship between them. It is written against that. It is given the document answer and the rows and told to join them with a sentence, not to reason about them: it may not round, total, average or compare, because every number in the result is already correct and any arithmetic it does is arithmetic nobody checked.
+
+**Nothing is lost when the extra machinery fails.** A split that cannot be made sends the whole question to each backend, which is what the system did before. A synthesis that cannot be written falls back to both answers under their own headings, which is a worse answer and a true one. A half that refuses is not an error, it is one source having nothing to say, and the answer is written from the other; only the case where neither half answers is a refusal. Both raw results travel back under `parts` and the page shows them side by side, because the one answer in the system written from two sources is the one a reader most needs to be able to take apart.
+
+Combined confidence is the **lower** of the two halves that answered. An answer resting on a confident manual passage and an empty query is not a confident answer.
+
+The cost is honest: a combined question is four model calls where a data question is one. The rule layer keeps it rare, routing to `both` only when a question names a written source *and* asks for a quantity, so "what does the manual say about temperature limits" stays a document question.
 
 ### Two independent hallucination guards, on the document path
 
@@ -117,7 +131,8 @@ RAG_Assistant/
 │   ├── vectorstore/ pgvector_store.py · vectordb.py      # pgvector or FAISS
 │   ├── retrieval/   retriever.py · reranker.py · confidence.py
 │   ├── generation/  prompt.py · llm.py · answer_generator.py
-│   ├── router/      classifier.py                        # documents | data | chart
+│   ├── router/      classifier.py                        # documents | data | chart | both
+│   │               planner.py                           # splits a compound question in two
 │   ├── semantic/    summaries.py · index.py              # what the db holds
 │   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py
 │   ├── charts/      builder.py
@@ -318,6 +333,26 @@ What that shared shape bought, with no code changed:
 - CSV and NetCDF export work on both
 
 What it cost is in [Results](#results), and it is not nothing.
+
+#### A fill value that read as a current
+
+ERDDAP says "not measured" in two different ways and the loader only understood one. Alongside `NaN`, which it handled, the feed writes the numeric fill value `-999999`, which parses as a perfectly good float and was stored as one. 189 of 139,971 fixes arrived that way, 0.14% of the table, and they were invisible until the surface current was actually queried:
+
+| Mean surface current speed | With the fill value | Cleaned |
+| --- | --- | --- |
+| Arabian Sea | 4011.854 m/s | 0.240 m/s |
+| Bay of Bengal | 6243.030 m/s | 0.329 m/s |
+| Southern Indian Ocean | 1606.288 m/s | 0.258 m/s |
+
+The cleaned column is what a surface drifter measures; the other is thirteen times the speed of sound in water. Nothing in the test suite caught this, because the parser was tested against `NaN` and an empty cell and both were handled correctly. It survived ingestion, QC and a published benchmark, and what exposed it was reading a number off the screen and knowing it was impossible.
+
+Fixed in three places, because one of them will be bypassed eventually:
+
+- [`_number`](scripts/load_drifters.py) drops the sentinel at parse time, along with `NaN`
+- a `CHECK` constraint in [`db/008_drifters.sql`](db/008_drifters.sql) refuses it at the database, where a loader written later cannot get round it
+- the [catalog](db/schema_catalog.md) gives the units and the speed formula, since the model had been writing `u + v` for a hypotenuse
+
+The 189 rows already loaded were set to NULL rather than deleted: the position, time and temperature on those fixes are good, and only the velocity was ever the fill value.
 
 ### Build the semantic layer
 
@@ -523,6 +558,26 @@ Accuracy is flat, inside the run-to-run spread. The refusal rate is not, and the
 
 **Adding a data source widened the hallucination surface.** That is the honest cost of the extension, in the one metric this project claims to care most about, and prompt wording did not close it. It belongs next to the feature rather than in a footnote.
 
+#### Closing it, without the model
+
+Three attempts at prompt wording failed, which is already recorded above. The catalog said "this is the only current speed in the database, and it is at the surface only" in the sentence directly under the column, and said of `pressure_dbar` that it is "not the depth of the seabed, which this database does not record". Both were read and both were overridden, the second by aliasing `max(pressure_dbar)` to `seafloor_depth`.
+
+So the rule stopped being advice to a model and became code that runs before one is called. [`src/sqlgen/scope.py`](src/sqlgen/scope.py) refuses two kinds of question:
+
+- a quantity with no column anywhere in the schema: wind, rainfall, the depth of the seabed, waves, marine life, pollution
+- a quantity held only at the surface, asked for at depth: the buoy velocities, which exist for the sea surface and for nothing below it
+
+Both lists are read off the schema rather than off this gold set. The refusal returns `UNANSWERABLE` with the reason attached, so it travels the path a model's own refusal already took and the user is told which quantity is missing rather than that the question failed.
+
+| Correct refusal rate | Before drifters | After drifters | With the scope gate |
+| --- | --- | --- | --- |
+| `llama3.1:8b` | 0.833 (5/6) | 0.667 (4/6) | **1.000 (6/6)** |
+| False refusals contributed by the gate | - | - | **0 of 46** |
+
+**These two numbers are exact rather than sampled.** The gate is a lexical test over the question, with no model call, so it does not move between runs and does not depend on which model is shipped: `qwen2.5-coder`'s perfect refusal score, [reported below](#the-seafloor-question-on-a-second-model) as evidence that the gap was the model's, is now something neither model is asked to supply. The six refusals are also immediate, where they previously cost a full generation each.
+
+The limit is written into the module rather than left for a reader to discover. This is lexical matching, so a paraphrase it does not carry goes to the model exactly as before: "how deep is the ocean under float 1900083" needed a pattern added during testing, and there will be others. It can only add a refusal, never remove one, so a question it says nothing about is generated and validated on the path it always used.
+
 #### Did the worked examples move the window bucket?
 
 No.
@@ -548,6 +603,8 @@ Asked for the seafloor depth beneath each float, `llama3.1:8b` answers `MAX(m.pr
 `qwen2.5-coder:7b` refuses it, and refuses the other five unanswerable questions too, at a false refusal rate of 0.000. Its answer is exactly `UNANSWERABLE`.
 
 So the earlier conclusion holds and now has evidence behind it: **that fabrication was a model limitation, not a wording problem.** Three prompt fixes were tried against it and each traded the caught fabrication for several refusals of legitimate questions, which is a worse system. A different model fixed it for free. What that costs is 0.098 of execution accuracy elsewhere, which is the shape of the choice rather than a reason to dismiss it.
+
+That conclusion was right and is now moot. Both halves of it assumed the choice was which model to ask, and the [scope gate](#closing-it-without-the-model) does not ask one: `llama3.1:8b` refuses the seafloor question now, not because it learned anything but because the question no longer reaches it. The lesson worth keeping is the one the section was written to make, that a fabrication surviving three rewordings is telling you something about where the rule belongs, rather than asking for a fourth.
 
 Validation pass rate is 1.000 for both models while accuracy is 0.620 and 0.522. Every generated query was well formed, safe and executable, and a third to a half still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
 
@@ -630,13 +687,13 @@ For the ocean data the argument is stronger still. The answer to "average surfac
 
 **Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the Streamlit page holds it in session state, so it disappears with the browser session. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
 
-**Architecture.** Semantic retrieval now feeds SQL generation, but a single question still gets a single answer: the router picks documents or data, so a question genuinely needing both sources gets one. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
+**Architecture.** A question needing both sources is now answered from both, but the join between them is a sentence rather than a computation: the synthesis step is forbidden to do arithmetic, so it can report that a flag means bad data and that 812 measurements carry one, and it cannot tell you what fraction of the record that is unless the query already did. Whether a question is compound is decided by regex and, failing that, by the router model, and a compound question phrased without any of the document words reaches the data path whole. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
 
 **Retrieval and generation.** Retrieval over the manuals reaches hit@5 of 0.960 on 25 questions, but that gold set was written by the same person who chose the corpus, which is the honest limit on what it shows. One question in twenty-five is still missed at k=5. No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Embeddings are English-only, so the manual retrieval path does not benefit from the translator the way the SQL path does. Language detection is by script, so a Latin-script language other than English is taken for English unless `always_translate` is set. No individual document deletion.
 
 **Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
-**Evaluation.** Text-to-SQL scores 0.620 execution accuracy on the shipped model and 0.522 on a second one, and complex queries are much worse than either average suggests: the window bucket is 1 in 3 on both, and three worked examples aimed squarely at it moved nothing. The shipped model still fabricates a seafloor depth rather than refusing; the second model refuses it and pays for that elsewhere. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.620 execution accuracy on the shipped model and 0.522 on a second one, and complex queries are much worse than either average suggests: the window bucket is 1 in 3 on both, and three worked examples aimed squarely at it moved nothing. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
 
 ## Roadmap
 
@@ -656,16 +713,17 @@ Done:
 - [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts, regions and export with no code changed
 - [x] A conversational thread rather than a single question box, with each turn keeping its own chart, table and SQL
 - [x] Multilingual questions, answered in the language they were asked in, with detection that costs nothing for English
+- [x] One answer from the manuals and the database together, split in two and rejoined, with both halves shown
 - [x] An MCP server, with no tool that accepts SQL
 - [x] Few-shot window-function examples, measured: they did not move the bucket
 - [x] A second model on the same 52 questions, which closed the refusal gap
 - [x] A document retrieval gold set that is not a five-row template, with numbers published
 - [x] Retrieval fixed: the IVFFlat vector index was searching one cluster of a hundred. HNSW took hit@5 from 0.160 to 0.960
+- [x] The refusal the drifters reopened, closed by a scope gate in front of the model rather than a fourth rewording: 6/6 correct refusals, 0 false refusals on the 46 answerable questions
+- [x] ERDDAP's numeric fill value dropped at parse time, at the database and in the catalog, after 189 fixes stored `-999999` as a surface current
 
 Not done, honestly:
 
-- [ ] Answer a single question from documents and data together, which is still the largest architectural gap
-- [ ] Close the refusal the drifters reopened: a surface current is not a current at 1000 decibars
 - [ ] Persist conversation history, which currently dies with the process
 - [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
 - [ ] LLM-judge / Ragas generation metrics (faithfulness, groundedness, answer relevance)

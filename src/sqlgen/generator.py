@@ -9,6 +9,7 @@ import re
 import httpx
 
 from src.sqlgen.schema_context import build_context
+from src.sqlgen.scope import out_of_scope
 from src.utils import cache
 
 SYSTEM = """You write PostgreSQL SELECT queries.
@@ -57,7 +58,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "9"
+PROMPT_VERSION = "10"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -147,6 +148,11 @@ ORDER BY region
 # drifters that does not exist, because on this platform region belongs to the
 # fix rather than to the instrument. Catalog wording did not fix either. One
 # worked example did.
+# The velocity columns needed their own example for a reason the temperature
+# example does not show. Speed from two components is the hypotenuse, and the
+# model wrote the sum: max(eastward_velocity_m_s + northward_velocity_m_s),
+# which is not a speed and is not even an upper bound on one. A rule saying so
+# competes with every other rule in the prompt; the worked query does not.
 DRIFTER_EXAMPLE = """=== DRIFTING BUOY EXAMPLE ===
 Question:	Average sea surface temperature from the drifting buoys in each region
 SQL:
@@ -154,6 +160,19 @@ SELECT o.region,
        avg(o.sst_c) AS mean_sst
 FROM drifter_observations o
 WHERE o.sst_c IS NOT NULL
+GROUP BY o.region
+ORDER BY o.region
+
+Question:	Average surface current speed in each region
+SQL:
+SELECT o.region,
+       avg(sqrt(
+           power(o.eastward_velocity_m_s, 2)
+           + power(o.northward_velocity_m_s, 2)
+       )) AS mean_current_speed_m_s
+FROM drifter_observations o
+WHERE o.eastward_velocity_m_s IS NOT NULL
+  AND o.northward_velocity_m_s IS NOT NULL
 GROUP BY o.region
 ORDER BY o.region
 """
@@ -241,6 +260,23 @@ def generate_sql(
     ``use_cache=False`` is useful for evaluation because cached responses
     would make latency measurements misleading.
     """
+
+    # Before anything else, and before the model is paid for. A question
+    # asking for a quantity the schema does not hold has one correct answer
+    # and it is not SQL, so there is nothing for the model to contribute.
+    # Returning the sentence the prompt asks for keeps this on the existing
+    # refusal path: the validator raises, and the caller reports it exactly
+    # as it reports a refusal the model made itself.
+    unheld = out_of_scope(question)
+
+    if unheld:
+        declined = f"UNANSWERABLE: {unheld}"
+
+        return (
+            (declined, False)
+            if return_cache_flag
+            else declined
+        )
 
     base = os.environ.get(
         "OLLAMA_BASE_URL",

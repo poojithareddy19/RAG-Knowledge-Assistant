@@ -36,7 +36,19 @@ CREATE TABLE IF NOT EXISTS drifter_observations (
     northward_velocity_m_s DOUBLE PRECISION,
     geom geography(Point, 4326),
     -- One fix per buoy per timestamp. Re-running the loader is then safe.
-    UNIQUE (buoy_id, obs_time)
+    UNIQUE (buoy_id, obs_time),
+    -- ERDDAP says "not measured" twice: as NaN, and as the numeric fill value
+    -- -999999, which parses as a good float and was stored as one. 189 rows
+    -- arrived that way and put the mean surface current in the Bay of Bengal
+    -- at 6,243 metres per second. The loader drops it now; this says so where
+    -- it cannot be bypassed by a loader written later. The fastest surface
+    -- current measured here is under 3 m/s, so the bound is not close to any
+    -- real reading.
+    CONSTRAINT drifter_velocity_is_plausible CHECK (
+        (eastward_velocity_m_s IS NULL OR eastward_velocity_m_s > -9999)
+        AND
+        (northward_velocity_m_s IS NULL OR northward_velocity_m_s > -9999)
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_drifter_obs_time

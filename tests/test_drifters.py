@@ -97,3 +97,35 @@ def test_a_missing_wmo_is_none_rather_than_zero():
     )
 
     assert rows[0]["wmo"] is None
+
+
+def test_the_numeric_fill_value_becomes_none_not_a_velocity():
+    """ERDDAP's other way of saying nothing was measured.
+
+    NaN was handled from the start; -999999 was not, and it parses as a
+    perfectly good float. 189 of 139,971 loaded observations carried it, which
+    was enough to report a mean surface current of thousands of metres per
+    second.
+    """
+    rows = parse_rows(
+        _feed(
+            "1,2,2023-01-01T00:00:00Z,-37.7,47.0,18.8,-999999,-999999,SVPB"
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["eastward_velocity_m_s"] is None
+    assert rows[0]["northward_velocity_m_s"] is None
+    # The rest of the fix is still a usable observation.
+    assert rows[0]["latitude"] == -37.7
+    assert rows[0]["sst_c"] == 18.8
+
+
+def test_a_real_negative_velocity_survives():
+    """Westward and southward are negative, and must not look like fill."""
+    rows = parse_rows(
+        _feed("1,2,2023-01-01T00:00:00Z,-37.7,47.0,18.8,-0.4521,-1.2,SVPB")
+    )
+
+    assert rows[0]["eastward_velocity_m_s"] == -0.4521
+    assert rows[0]["northward_velocity_m_s"] == -1.2

@@ -49,8 +49,24 @@ def validate(
     here instead of failing in the database.
     """
 
-    if not sql or sql.strip().upper() == "UNANSWERABLE":
+    if not sql:
         raise SQLRejected("model declined to answer from this schema")
+
+    # A refusal may carry the reason after a colon, which is what the scope
+    # gate uses to say which quantity is missing. Matching on the prefix
+    # rather than the whole string also catches a model that ends the word
+    # with a full stop or adds a line of explanation after it: those are
+    # refusals too, and before this they fell through to the SQL parser and
+    # were reported as a syntax error rather than as a decline.
+    head = sql.strip().upper()
+
+    if head.startswith("UNANSWERABLE"):
+        _, _, reason = sql.strip().partition(":")
+
+        raise SQLRejected(
+            reason.strip()
+            or "model declined to answer from this schema"
+        )
 
     statements = [s for s in sqlparse.parse(sql) if str(s).strip()]
 

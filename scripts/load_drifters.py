@@ -119,6 +119,16 @@ def parse_rows(text: str) -> list[dict]:
     return out
 
 
+# ERDDAP reports a missing value two ways and this loader only caught one.
+# Alongside NaN it writes the numeric fill value -999999, which parses as a
+# perfectly good float and was stored as one: 189 of 139,971 observations, and
+# enough to put the mean surface current speed in the Bay of Bengal at 6,243
+# metres per second. No real value of any column this parses comes near it.
+# Latitude bottoms out at -90, sea surface temperature at about -2, and a
+# current at a couple of metres per second, so one threshold guards them all.
+_FILL = -9999.0
+
+
 def _number(value) -> float | None:
     try:
         number = float(str(value).strip())
@@ -126,7 +136,10 @@ def _number(value) -> float | None:
         return None
 
     # ERDDAP writes NaN for a missing measurement rather than an empty cell.
-    return None if number != number else number
+    if number != number:
+        return None
+
+    return None if number <= _FILL else number
 
 
 def _integer(value) -> int | None:

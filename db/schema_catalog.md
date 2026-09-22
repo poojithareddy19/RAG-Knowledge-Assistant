@@ -93,9 +93,13 @@ One row per buoy per six-hour fix.
   only temperature a drifter measures, and it is at the surface, so it is
   comparable with `measurements.temperature_c` where `pressure_dbar < 10` and
   with nothing deeper
-- `eastward_velocity_m_s`, `northward_velocity_m_s` (double) - surface current,
-  derived from how the buoy itself moved. This is the only current speed in the
-  database, and it is at the surface only
+- `eastward_velocity_m_s`, `northward_velocity_m_s` (double) - the two
+  components of the surface current in metres per second, derived from how the
+  buoy itself moved. This is the only current speed in the database, and it is
+  at the surface only. Speed is the hypotenuse of the two,
+  `sqrt(power(eastward_velocity_m_s, 2) + power(northward_velocity_m_s, 2))`,
+  never their sum. Either may be NULL where the source reported no velocity,
+  so exclude NULLs before averaging
 - `geom` (geography Point) - the position, for distance queries
 
 There is no QC flag column here: the source product is already quality
