@@ -1,0 +1,72 @@
+name: ci
+
+# The test suite is deterministic by design: no API key, no database, no GPU
+# and no model server. Everything that would need one is mocked, which is what
+# makes running it on every push affordable.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  # A second push to the same branch makes the first run's answer irrelevant.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        # Only ruff. Linting does not need torch, and pulling the full
+        # requirements here would cost several minutes to say nothing new.
+        run: pip install "ruff>=0.5"
+
+      - name: Lint
+        run: ruff check src tests scripts app.py
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Do not stop 3.12 because 3.11 failed. Which versions break is the
+      # question this matrix exists to answer.
+      fail-fast: false
+      matrix:
+        # pyproject declares >=3.12; the machine this was developed on runs
+        # 3.11. Both are tested until that disagreement is settled one way or
+        # the other, because a floor nobody runs is a floor nobody checks.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        # sentence-transformers pulls torch, which is most of the install time.
+        # The CPU wheel index keeps it to a few hundred megabytes rather than
+        # the CUDA build, which this suite would never use.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements.txt
+
+      - name: Test
+        run: pytest -q
+
+      - name: Every reference query still passes the validator
+        # db/queries holds the worked examples the prompt is built from. A
+        # reference query the validator would reject is a contradiction, and
+        # this is asserted in the suite above; naming it as its own step means
+        # a failure says which contract broke without reading the log.
+        run: pytest -q tests/test_sql_validator.py
