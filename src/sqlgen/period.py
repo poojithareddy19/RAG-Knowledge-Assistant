@@ -118,11 +118,3 @@ def range_end_excluded(question: str, sql: str) -> str | None:
 def period_problem(question: str, sql: str) -> str | None:
     """The first period mismatch between the question and the query, or None."""
     return open_ended_year(question, sql) or range_end_excluded(question, sql)
-
-
-class PeriodMismatch(ValueError):
-    """A query that covers a different period than the question asked about.
-
-    Not an SQLRejected on purpose: a validator refusal is never repaired, and
-    this is exactly the kind of mistake a repair given the reason can fix.
-    """

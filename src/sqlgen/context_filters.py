@@ -96,8 +96,3 @@ def _reason(what: str) -> str:
         "background and never become filters: remove every condition the "
         "question did not ask for, and answer exactly the question as asked"
     )
-
-
-class CopiedFilter(ValueError):
-    """A filter lifted from the retrieved context. Repairable, like the other
-    checks, so deliberately not an SQLRejected."""

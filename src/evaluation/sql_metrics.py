@@ -49,11 +49,9 @@ from decimal import Decimal
 
 import pandas as pd
 
-from src.sqlgen.context_filters import CopiedFilter, copied_filter
-from src.sqlgen.counting import ProfileOvercount, profiles_overcounted
+from src.sqlgen.checks import check as check_answers_question
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
-from src.sqlgen.period import PeriodMismatch, period_problem
 from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.scope import error_is_the_answer
 from src.sqlgen.validator import PLATFORMS, SQLRejected, validate
@@ -219,16 +217,9 @@ def evaluate_one(
             safe = validate(raw, ALLOWED)
             record["validated"] = True
 
-            # The same period check as the app, so the benchmark keeps
-            # measuring the system people use.
-            if problem := period_problem(question, safe):
-                raise PeriodMismatch(problem)
-
-            if overcount := profiles_overcounted(question, safe):
-                raise ProfileOvercount(overcount)
-
-            if copied := copied_filter(question, safe, context):
-                raise CopiedFilter(copied)
+            # The same checks as the app, so the benchmark keeps measuring
+            # the system people use.
+            check_answers_question(question, safe, context)
 
             out = run_query(safe)
             record["executed"] = True
@@ -275,14 +266,7 @@ def evaluate_one(
             safe = validate(raw, ALLOWED)
             record["validated"] = True
 
-            if problem := period_problem(question, safe):
-                raise PeriodMismatch(problem) from first
-
-            if overcount := profiles_overcounted(question, safe):
-                raise ProfileOvercount(overcount) from first
-
-            if copied := copied_filter(question, safe, context):
-                raise CopiedFilter(copied) from first
+            check_answers_question(question, safe, context)
 
             out = run_query(safe)
             record["executed"] = True

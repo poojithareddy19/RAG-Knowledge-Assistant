@@ -77,6 +77,35 @@ def profiles_overcounted(question: str, sql: str) -> str | None:
     return None
 
 
-class ProfileOvercount(ValueError):
-    """A profile count that counts measurement rows. Repairable, like
-    PeriodMismatch, so deliberately not an SQLRejected."""
+# "how many measurements", "number of BGC measurements", "measurements per".
+_COUNTS_MEASUREMENTS = re.compile(
+    r"\b(how many|number of|count of|count the|total)\s+(?:[\w-]+\s+){0,2}measurements\b"
+    r"|\bmeasurements\s+(per|by|each|in each)\b",
+    re.I,
+)
+
+
+def measurements_undercounted(question: str, sql: str) -> str | None:
+    """Why this query counts something other than measurements, or None.
+
+    The reverse of the profile case. Asked "how many measurements belong to
+    floats in the Southern Indian Ocean?", the model counted rows of profiles
+    joined to floats and never read measurements at all.
+    """
+    if not question or not sql:
+        return None
+
+    if not _COUNTS_MEASUREMENTS.search(question) or _MEASUREMENTS.search(sql):
+        return None
+
+    return (
+        "the question counts measurements, but the query never reads the "
+        "measurements table, so it counts profiles or floats instead. Count "
+        "rows of measurements, joining profiles on profile_id for region or "
+        "time and floats on float_id for float details"
+    )
+
+
+def count_problem(question: str, sql: str) -> str | None:
+    """The first way this query counts the wrong thing, or None."""
+    return profiles_overcounted(question, sql) or measurements_undercounted(question, sql)

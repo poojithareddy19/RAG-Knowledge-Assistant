@@ -433,3 +433,55 @@ def test_a_filter_copied_from_the_context_is_repaired(spans, monkeypatch):
     assert result["answer"] == "count: 80"
     assert len(ran) == 1 and "PROVOR_MT" not in ran[0]
     assert "PROVOR_MT" in repair_errors[0]
+
+
+def test_two_problems_reach_the_repair_together(spans, monkeypatch):
+    """The real query copied a filter and counted the wrong table. Both reasons
+    go to the one repair, which fixes both, and only that query is run."""
+    from src.utils.schemas import Summary
+
+    pipeline, svc, _ = _service(monkeypatch, "data")
+
+    ran = []
+    repair_errors = []
+    summary = Summary(
+        kind="float", subject="1900042",
+        text="ARGO float 1900042 is an APEX platform and part of project US ARGO PROJECT.",
+        score=0.7,
+    )
+
+    monkeypatch.setattr(svc, "_summaries", lambda q: [summary])
+    monkeypatch.setattr(svc, "_column_catalog", lambda: None)
+    monkeypatch.setattr(
+        pipeline,
+        "generate_sql",
+        lambda *a, **k: (
+            "SELECT COUNT(*) FROM profiles p JOIN floats f ON f.float_id = p.float_id "
+            "WHERE f.project = 'US ARGO PROJECT' AND p.region = 'Southern Indian Ocean'",
+            False,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "validate", lambda sql, **_: sql + " LIMIT 500")
+
+    def repair(question, broken, error, **_):
+        repair_errors.append(error)
+        return (
+            "SELECT count(*) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id "
+            "WHERE p.region = 'Southern Indian Ocean'"
+        )
+
+    def run(sql, **_):
+        ran.append(sql)
+        return {"columns": ["count"], "rows": [[123]], "row_count": 1, "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(pipeline, "repair_sql", repair)
+    monkeypatch.setattr(pipeline, "run_query", run)
+
+    result = svc.answer("How many measurements belong to floats in the Southern Indian Ocean?")
+
+    assert result["answered"] is True
+    assert result["answer"] == "count: 123"
+    assert len(repair_errors) == 1
+    assert "never reads the measurements table" in repair_errors[0]
+    assert "US ARGO PROJECT" in repair_errors[0]
+    assert len(ran) == 1 and "FROM measurements" in ran[0]

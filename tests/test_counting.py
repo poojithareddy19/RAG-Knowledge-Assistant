@@ -9,7 +9,7 @@ doubt.
 
 import pytest
 
-from src.sqlgen.counting import profiles_overcounted
+from src.sqlgen.counting import count_problem, measurements_undercounted, profiles_overcounted
 
 # The model's SQL for the per-region question in the benchmark, verbatim.
 PER_REGION = (
@@ -87,3 +87,55 @@ def test_the_gold_reference_queries_are_never_flagged():
     assert rows
     for row in rows:
         assert profiles_overcounted(row["question"], row["expected_sql"]) is None, row["question"]
+
+
+# ---------------------------------------------------------------------------
+# Measurements counted as something else
+# ---------------------------------------------------------------------------
+
+# The model's SQL for this gold question in the live runs, after the copied
+# project filter was repaired away.
+SIO_QUESTION = "How many measurements belong to floats in the Southern Indian Ocean?"
+SIO_SQL = (
+    "SELECT COUNT(*) FROM profiles p JOIN floats f ON f.float_id = p.float_id "
+    "WHERE p.region = 'Southern Indian Ocean'"
+)
+
+
+def test_a_measurement_count_that_never_reads_measurements_is_caught():
+    reason = measurements_undercounted(SIO_QUESTION, SIO_SQL)
+
+    assert reason is not None
+    assert "never reads the measurements table" in reason
+    assert count_problem(SIO_QUESTION, SIO_SQL) == reason
+
+
+@pytest.mark.parametrize(
+    "question, sql",
+    [
+        # The reference form.
+        (SIO_QUESTION,
+         "SELECT count(*) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id "
+         "WHERE p.region = 'Southern Indian Ocean'"),
+        ("How many measurements have been recorded?", "SELECT COUNT(*) FROM measurements"),
+        ("How many BGC measurements are there?",
+         "SELECT count(*) FROM measurements WHERE oxygen_umol_kg IS NOT NULL"),
+        # Counting profiles is the other check's business, not this one's.
+        ("How many profiles are there in total?", "SELECT count(*) FROM profiles"),
+        # A question that mentions measurements without counting them.
+        ("Which floats have measurements below 1000 decibars?",
+         "SELECT DISTINCT float_id FROM profiles"),
+    ],
+)
+def test_counts_that_read_measurements_or_are_not_measurement_counts_pass(question, sql):
+    assert measurements_undercounted(question, sql) is None
+
+
+def test_no_reference_query_trips_either_count_check():
+    import csv
+
+    with open("data/evaluation/ocean_questions.csv", encoding="utf-8") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["expected_sql"].strip()]
+
+    for row in rows:
+        assert count_problem(row["question"], row["expected_sql"]) is None, row["question"]
