@@ -1,12 +1,13 @@
 """HTTP layer.
 
-Every endpoint delegates to RAGService, the same object the Streamlit pages
-use. There is exactly one place where behaviour is defined, so the web page and
-the API cannot drift apart.
+Every endpoint delegates to RAGService, so behaviour is defined in exactly one
+place. The React front end in web/ is a client of this service and nothing
+else.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import threading
 from contextlib import asynccontextmanager
@@ -176,8 +177,14 @@ def ask(req: AskRequest) -> AskResponse:
             str(result.get("answer", ""))[:400],
         )
 
-    # Binary chart data does not belong in a JSON response.
-    result.pop("chart_png", None)
+    # Raw bytes do not survive JSON, so the generic chart travels as base64.
+    # It used to be dropped here, which was harmless while the Streamlit page
+    # read the pipeline directly and fatal once the React page, which only has
+    # this response, became the one front end.
+    png = result.pop("chart_png", None)
+
+    if png:
+        result["chart_png_base64"] = base64.b64encode(png).decode("ascii")
 
     # The API calls these fields "citations".
     result["citations"] = result.pop("sources", [])

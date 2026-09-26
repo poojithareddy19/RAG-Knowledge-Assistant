@@ -31,12 +31,6 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 COPY src/ ./src/
 COPY db/ ./db/
 COPY config.yaml ./
-# The Streamlit page and the basemaps it needs. One image runs either process:
-# the API by default, the dashboard by overriding the command. Keeping them in
-# one image means the two cannot drift onto different versions of src/.
-COPY app.py ./
-COPY static/ ./static/
-
 EXPOSE 8000
 
 # Give the API enough time to start before health checks begin.

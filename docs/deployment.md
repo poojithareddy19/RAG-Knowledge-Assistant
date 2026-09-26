@@ -59,13 +59,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
 Naming both files matters. `docker-compose.override.yml` is picked up
-automatically and is local-only: it carries bind mounts of the working tree and
-publishes the database on 5433. On a server that would serve whatever happens
-to be in the checkout.
-
-Add the Streamlit dashboard, which carries the evaluation and monitoring pages,
-with `--profile dashboard`. It is for whoever runs this rather than whoever
-asks it questions.
+automatically and is local-only: it publishes the database on 5433 because
+5432 is taken on the development machine, which a server has no reason to copy.
 
 ## Load the data
 

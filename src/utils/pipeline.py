@@ -1,7 +1,7 @@
 """Pipeline service facade.
 
 One object that wires the whole system together so callers
-(Streamlit, FastAPI, tests) never touch individual modules.
+(FastAPI, the evaluation, tests) never touch individual modules.
 
 Responsibilities:
 - route a question to summaries, data or chart
@@ -16,8 +16,8 @@ The service exposes two public query methods:
         Used by the API's route_override and by the generation evaluation.
 
     answer(question) -> dict
-        Routed path returning a uniform dictionary. Used by the Streamlit page
-        and FastAPI. This is the normal way in: the router decides which
+        Routed path returning a uniform dictionary. Used by FastAPI, and so by
+        the React front end. This is the normal way in: the router decides which
         source answers, so a caller does not have to know before asking.
 """
 

@@ -139,8 +139,8 @@ vendor-neutral: the same instrumentation writes to a local file by default and
 to Jaeger, Phoenix or Langfuse by setting one environment variable. A
 self-hosted Langfuse was the alternative, and it needs its own Postgres,
 ClickHouse and web containers, which this machine cannot spare. The default
-exporter is a file, synchronous per span, so a killed Streamlit rerun does not
-lose the spans still queued.
+exporter is a file, synchronous per span, so a restarted API or a killed
+evaluation does not lose the spans still queued.
 
 Prompt text is off by default. Questions can be personal, and the interaction
 log already holds the question and answer; the trace's job is timing and

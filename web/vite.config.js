@@ -6,6 +6,10 @@ import react from '@vitejs/plugin-react'
 // configuration to get wrong and no second URL to keep in step.
 export default defineConfig({
   plugins: [react()],
+  // Plotly is one 4.8 MB chunk, split out and loaded only when an answer has
+  // a chart. It cannot usefully be split further, so the warning is raised
+  // past it rather than left to be ignored on every build.
+  build: { chunkSizeWarningLimit: 5000 },
   server: {
     port: 5173,
     proxy: {

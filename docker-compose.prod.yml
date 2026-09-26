@@ -61,36 +61,5 @@ services:
       api:
         condition: service_healthy
 
-  # The Streamlit dashboard, from the same image as the API so the two cannot
-  # drift. Optional: bring it up with --profile dashboard. It carries the
-  # evaluation and monitoring pages, which are for whoever runs this rather
-  # than for whoever asks it questions.
-  dashboard:
-    profiles: ["dashboard"]
-    restart: unless-stopped
-    build: .
-    environment:
-      DATABASE__URL: ${DATABASE_URL:-postgresql://gda:gda_local_pw@db:5432/gda}
-      DATABASE__READONLY_URL: ${DATABASE_READONLY_URL:-postgresql://gda_ro:gda_ro_pw@db:5432/gda}
-      # Literal, not interpolated, for the reason given on the api service.
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-      GENERATION__PROVIDER: ollama
-      GENERATION__MODEL: ${GENERATION_MODEL:-llama3.1:latest}
-      VECTORSTORE__BACKEND: pgvector
-    command:
-      - streamlit
-      - run
-      - app.py
-      - --server.port=8501
-      - --server.address=0.0.0.0
-      - --server.headless=true
-    ports:
-      - "${DASHBOARD_PORT:-8501}:8501"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      db:
-        condition: service_healthy
-
 volumes:
   pgdata:

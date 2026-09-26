@@ -147,7 +147,7 @@ def setup_tracing() -> None:
             path = cfg.get("file", "logs/traces.jsonl")
 
             if path:
-                # Simple rather than batched: a Streamlit rerun or a killed
+                # Simple rather than batched: a restarted API or a killed
                 # evaluation should not lose the spans still waiting in a queue.
                 provider.add_span_processor(
                     SimpleSpanProcessor(JsonlSpanExporter(path))

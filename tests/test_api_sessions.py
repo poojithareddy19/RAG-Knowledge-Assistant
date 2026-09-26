@@ -55,3 +55,26 @@ def test_the_request_schema_accepts_a_session_id():
 
 def test_a_session_id_is_optional():
     assert main.AskRequest(question="how many floats are there").session_id is None
+
+
+def test_the_generic_chart_reaches_the_client_as_base64(monkeypatch):
+    """The pipeline holds PNG bytes, which JSON cannot carry. The React page
+    draws the generic chart from this field, so it must survive the trip."""
+    import base64
+
+    class FakeService:
+        def answer_from_data(self, question, want_chart=False):
+            return {
+                "answer": "3 rows",
+                "confidence": 1.0,
+                "chart_png": b"\x89PNG fake bytes",
+                "chart_kind": "bar",
+            }
+
+    monkeypatch.setattr(main, "service", lambda: FakeService())
+
+    response = main.ask(main.AskRequest(question="bar chart of profiles per region",
+                                        route_override="chart"))
+
+    assert base64.b64decode(response.chart_png_base64) == b"\x89PNG fake bytes"
+    assert response.chart_kind == "bar"

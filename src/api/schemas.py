@@ -60,6 +60,9 @@ class AskResponse(BaseModel):
     # that only renders images still knows what it was given.
     chart_spec: dict | None = None
     chart_kind: str | None = None
+    # The generic chart, for an ordinary aggregate on the chart route, as a
+    # base64 PNG. JSON cannot carry the bytes the pipeline holds.
+    chart_png_base64: str | None = None
     # The OpenTelemetry trace for this answer: every step and model call it
     # took, in logs/traces.jsonl or whichever OTLP viewer is configured.
     trace_id: str | None = None

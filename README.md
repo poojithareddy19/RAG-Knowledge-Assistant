@@ -6,7 +6,7 @@ Two kinds of question, one system. **What does the archive hold?** is answered f
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The summaries path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer of float and region summaries in pgvector that both answers questions directly with citations and tells the SQL generator what the database actually holds, text-to-SQL with a four-layer safety path, a rule-first query router, conversational follow-ups, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, a Streamlit dashboard, a FastAPI service and a React front end, with the Docker stage proven and images published from CI. Measured: [0.617 execution accuracy](#results) on 67 SQL questions, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.957](#retrieval-results) on 23 summary questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer of float and region summaries in pgvector that both answers questions directly with citations and tells the SQL generator what the database actually holds, text-to-SQL with a four-layer safety path, a rule-first query router, conversational follow-ups, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, a FastAPI service and a React front end that draws the charts, with the Docker stage proven and images published from CI. Measured: [0.617 execution accuracy](#results) on 67 SQL questions, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.957](#retrieval-results) on 23 summary questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -97,8 +97,8 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | LLM             | Ollama, local, no API key                 | `llama3.1:8b`, `qwen2.5-coder:7b` |
 | Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
 | Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
-| API             | FastAPI + Pydantic                        | same service object as Streamlit  |
-| UI              | Streamlit (5 pages) and a React front end |                                   |
+| API             | FastAPI + Pydantic                        | the one entry point to the system |
+| UI              | React, charts drawn with Plotly           | a client of the API only          |
 | Evaluation      | retrieval, generation and SQL execution metrics |                             |
 | Logging         | structured JSONL                          | one line per question             |
 | Tracing         | OpenTelemetry, GenAI conventions          | JSONL by default, OTLP optional   |
@@ -109,7 +109,6 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 
 ```
 FloatChat-ARGO-RAG/
-├── app.py                     # Streamlit dashboard (presentation only)
 ├── config.yaml                # all tunable behaviour
 ├── docker-compose.yml         # pgvector + PostGIS Postgres, the API
 ├── docker-compose.prod.yml    # nginx, the web bundle, the API, the database
@@ -122,7 +121,7 @@ FloatChat-ARGO-RAG/
 │   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py · scope.py
 │   ├── charts/      builder.py · ocean.py
 │   ├── evaluation/  metrics.py · evaluator.py · generation_metrics.py · sql_metrics.py · ab_test.py
-│   ├── monitoring/  logger.py · analytics.py · tracing.py
+│   ├── monitoring/  logger.py · tracing.py
 │   ├── api/         main.py · schemas.py                 # FastAPI
 │   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
 ├── db/              001_schema.sql … 009_drop_doc_chunks.sql
@@ -130,12 +129,12 @@ FloatChat-ARGO-RAG/
 ├── scripts/         fetch_argo_index.py · load_argo_netcdf.py · load_regions.py
 │                    load_drifters.py · build_semantic_index.py · check_regions.py
 │                    run_ab_test.py · verify_routes.py
-├── web/             React front end over the API
+├── web/             React front end over the API, with the map basemaps in public/topojson/
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
 ```
 
-Everything routes through `RAGService` in [`src/utils/pipeline.py`](src/utils/pipeline.py). Streamlit and FastAPI both call that one object, so the web page and the API cannot drift apart.
+Everything routes through `RAGService` in [`src/utils/pipeline.py`](src/utils/pipeline.py). FastAPI calls that one object, and the React front end calls FastAPI, so behaviour is defined in exactly one place.
 
 ---
 
@@ -309,32 +308,27 @@ Two database URLs are required. `DATABASE__URL` owns the schema and runs ingesti
 
 ## Running
 
-```bash
-streamlit run app.py
-```
-
-Pages: Home, Ask, Evaluation, Monitoring, Settings. Ask is one box over both routes: a thread rather than a single question, with each turn keeping its own chart, table, SQL or citations.
-
-Or the HTTP service:
+Two processes: the API, and the React front end that talks to it.
 
 ```bash
 uvicorn src.api.main:app --reload
 ```
 
-`POST /ask` takes `{"question": "...", "route_override": null, "session_id": null}` and returns the answer with citations or with the generated SQL, rows and timings. `route_override` is one of `summaries`, `data` or `chart` when the caller wants to bypass the router. Passing the same `session_id` on a later request is what makes a follow up like "and in 2022?" resolvable. `GET /health` reports how many summaries are indexed, the measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
-
-Both UIs show the same two things the answer depends on: for the summaries, the retrieved float and region summaries with their similarity scores and the exact prompt sent to the model; for data, the SQL. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
-
-### The React front end
-
-A second client over the same API, in [`web/`](web/). The Streamlit page reaches past the API into the pipeline directly, so it cannot find the places where the response is awkward to consume; a UI written against `AskResponse` can.
-
 ```bash
-uvicorn src.api.main:app --reload    # the service it talks to
 cd web && npm install && npm run dev
 ```
 
-Same principle as the dashboard: the route, the SQL and the citations travel with every answer, and a refusal renders as a result rather than an error.
+Then open http://localhost:5173. The page is one box over both routes: a thread rather than a single question, with each turn keeping its own chart, table, SQL or citations.
+
+`POST /ask` takes `{"question": "...", "route_override": null, "session_id": null}` and returns the answer with citations or with the generated SQL, rows and timings. `route_override` is one of `summaries`, `data` or `chart` when the caller wants to bypass the router. Passing the same `session_id` on a later request is what makes a follow up like "and in 2022?" resolvable. `GET /health` reports how many summaries are indexed, the measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
+
+The page shows what each answer depends on: for the summaries, the float or region each claim rests on with its similarity score; for data, the SQL, the rows and the chart drawn from them. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
+
+### The React front end
+
+In [`web/`](web/), and a client of the API and nothing else, as one on another server would be. That is what makes it worth having: a UI written against `AskResponse` finds the places where the response is awkward to consume. A refusal renders as a result rather than an error. Charts are drawn from the Plotly figure the API returns, with Plotly loaded the first time an answer has one, so a page without charts does not pay 4.8 MB for it.
+
+There used to be a Streamlit dashboard beside it, with evaluation and monitoring pages. It was removed so the system is reached one way. Evaluation runs from the command line, below, and monitoring reads `logs/interactions.jsonl` and `logs/traces.jsonl`.
 
 ### Tracing
 
@@ -414,7 +408,7 @@ Three harnesses, because the three things that can go wrong fail differently: re
 
 Twenty of the twenty-three are found at rank one. Named floats are exact, because an identifier in the question is looked up rather than embedded. The one miss is "which region has the longest coverage in time", which retrieves floats rather than regions: every float summary also says when it reported, and nothing in that question names a region. The two partial hits are the multi-float questions, where the gold set names four or six floats and top-k holds only some of them, which is what recall@k below hit@k means.
 
-Reproduce from the Evaluation page of the dashboard, or:
+Reproduce with:
 
 ```bash
 python -m src.evaluation.evaluator --k 5
@@ -735,7 +729,7 @@ There is also a paired A/B harness ([`src/evaluation/ab_test.py`](src/evaluation
 | Rules that hold are code                  | The scope gate and the platform-join rule live in front of the model, after prompt wording failed three times |
 | Temperature 0                             | The task is faithful extraction, not creative writing. Also makes evaluation runs comparable                   |
 | Subject-level evaluation anchors          | Summary wording can be tuned without destroying the ground truth set                                           |
-| One service facade                        | Streamlit and FastAPI share `RAGService`, so behaviour is defined once                                         |
+| One service facade                        | FastAPI is the only caller of `RAGService`, so behaviour is defined once                                       |
 
 ## Why RAG rather than fine-tuning
 
@@ -747,13 +741,13 @@ For the measurements the argument is stronger still. The answer to "average surf
 
 **Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Sixteen of those floats carry a biogeochemical sensor, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Region comes from IHO basin polygons in PostGIS, with the old latitude and longitude inequalities kept as the fallback for a position inside none of the three loaded basins, which is 3% of profiles.
 
-**Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the Streamlit page holds it in session state, so it disappears with the browser session. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
+**Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the React page generates a new session id on every load, so a refresh starts a new conversation. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
 
 **Architecture.** A question is answered from one route. One that needs a description and a computation, "which floats measure oxygen and how many readings do they hold", is routed to whichever half the wording favours and answered by that half alone. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each, and the exact scan that is right for 83 rows will want an index.
 
 **Retrieval and generation.** Retrieval over the summaries reaches hit@5 of 0.957 on 23 questions, but that gold set was written by the same person who wrote the summaries, which is the honest limit on what it shows. A summary carries statistics computed at index time, and a question that asks for a number under a condition the summaries do not carry has to reach the SQL path through the router, which decides by wording. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Questions are expected in English: the embeddings, the prompts and the SQL cache are English-only.
 
-**Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
+**Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `web/public/topojson/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
 **Evaluation.** Text-to-SQL scores 0.617 execution accuracy over 67 questions on the shipped model. The earlier measurements, 0.567 on the same model and 0.483 on a second one, were taken on a previous prompt that may have been cut by the model's context window, and the second model has not been re-run since. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 on **both** models, and worked examples, a repair attempt and a change of model have each failed to move it. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. The repair loop recovered 2 queries of 4 attempts in the current run and cannot touch the 21 questions that fail by returning the wrong rows without an error. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set written by the same person who wrote the schema, which is a real limit on what they can show.
 

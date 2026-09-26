@@ -1,7 +1,4 @@
 # Core
-# 1.52 is the floor because the UI passes width="stretch" rather than the
-# deprecated use_container_width, and the width API landed across 1.50 to 1.52.
-streamlit>=1.52,<2.0
 # <4.0, not <3.0: the suite runs green on pandas 3, which is what a fresh
 # install resolves to and what the development venv already had while this
 # file still claimed otherwise.

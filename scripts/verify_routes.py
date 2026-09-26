@@ -2,7 +2,7 @@
 
 Runs a handful of questions through RAGService, printing the route taken, the
 SQL that was generated and whether it executed. Chart questions write their PNG
-to data/processed/ so the plot can be inspected without opening Streamlit.
+to data/processed/ so the plot can be inspected without starting the app.
 
 Usage:
     python -m scripts.verify_routes

@@ -1,9 +1,9 @@
 # FloatChat web
 
-A React front end over the FastAPI service, for the same reason the Streamlit
-page exists: an answer you cannot check is not an answer. Every turn shows the
-route that was taken, the SQL that produced the table, and the
-float or region behind a summary claim.
+The front end for FloatChat, a React client of the FastAPI service. An answer
+you cannot check is not an answer, so every turn shows the route that was
+taken, the SQL that produced the table, the chart drawn from it, and the float
+or region behind a summary claim.
 
 ## Running
 
@@ -26,15 +26,15 @@ http://localhost:5173. Vite proxies `/api` to `http://localhost:8000`, so the
 browser stays on one origin and there is no CORS configuration to get wrong.
 Point it elsewhere with `VITE_API_BASE` if the service is not local.
 
-## What it is not
+## Why only through the API
 
-Not a replacement for the Streamlit app. That one has the evaluation and
-monitoring pages and the interactive ocean charts, and it is where the
-project is actually used. This exists because the problem statement asks for a
-React front end on the production path, and because the API contract is worth
-having a second client for: a UI written against `AskResponse` finds the places
-where that response is awkward, and the Streamlit page cannot, since it reaches
-past the API into the pipeline directly.
+It talks to `POST /ask` and to nothing else, as a client on another server
+would. That is the point of having it: a UI written against `AskResponse` finds
+the places where that response is awkward to consume, which a page reaching
+into the pipeline directly never can. It is the only front end; there used to
+be a Streamlit dashboard beside it, removed so that behaviour is reachable one
+way. Evaluation runs from the command line (`src/evaluation/`) and monitoring
+reads `logs/interactions.jsonl` and `logs/traces.jsonl`.
 
 ## Contract
 
@@ -47,7 +47,10 @@ One endpoint does the work. `POST /ask` takes
 and returns `AskResponse`: the answer, the route and who decided it, the
 confidence, and then whichever evidence applies. A summary answer carries
 `citations`, each naming the float or region it rests on; a data answer
-carries `generated_sql`, `columns` and `rows`. A
+carries `generated_sql`, `columns` and `rows`, and a chart when the rows have
+a shape worth drawing: `chart_spec`, a Plotly figure for trajectories, profiles,
+sections and T-S diagrams, or `chart_png_base64` from the generic renderer when
+a chart was asked for and the rows are an ordinary aggregate. A
 refusal sets `refused` with a `reason` and is rendered as a result rather than
 an error, because the system declining is the behaviour this project wants.
 
@@ -66,5 +69,8 @@ src/
     RouteBadge.jsx        which half of the system answered
     SqlBlock.jsx          the query behind the table, one click away
     ResultTable.jsx       first 100 rows, with the true count
+    Chart.jsx             the Plotly figure or the PNG; Plotly loads on first use
     Citations.jsx         the float or region behind a claim, with similarity
+public/
+  topojson/               world basemaps, so trajectory maps draw offline
 ```

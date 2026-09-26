@@ -1,3 +1,4 @@
+import Chart from './Chart.jsx'
 import Citations from './Citations.jsx'
 import ResultTable from './ResultTable.jsx'
 import RouteBadge from './RouteBadge.jsx'
@@ -38,6 +39,11 @@ export default function Turn({ turn }) {
             </p>
           )}
 
+          <Chart
+            spec={result.chart_spec}
+            png={result.chart_png_base64}
+            kind={result.chart_kind}
+          />
           <SqlBlock sql={result.generated_sql} />
           <ResultTable
             columns={result.columns}
