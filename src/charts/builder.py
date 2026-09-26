@@ -208,6 +208,10 @@ def render(result, title=None):
     fig, ax = plt.subplots(figsize=(8, 4.5))
 
     if kind == "line":
+        # The step is read from the real points, before the break rows go in:
+        # those sit mid-gap, off the calendar grid, and would push the step
+        # onto the median fallback.
+        step = usual_step(df[x])
         gaps = find_gaps(df[x])
         df = break_at_gaps(df, x, gaps)
 
@@ -215,10 +219,11 @@ def render(result, title=None):
         # Each band stops half a step short of the points on either side, so a
         # lone year inside a long gap sits on white rather than looking as if
         # it were part of the missing stretch, and two neighbouring gaps show
-        # as two bands.
-        inset = usual_step(df[x].dropna()) / 2
-
+        # as two bands. A series too short to have a step has no gaps, so the
+        # inset is only needed inside the loop; computing it outside divided
+        # None by two and turned a three-point chart into a 500.
         for start, end in gaps:
+            inset = step / 2
             ax.axvspan(start + inset, end - inset, color="0.92", zorder=0)
             ax.text(
                 start + (end - start) / 2,

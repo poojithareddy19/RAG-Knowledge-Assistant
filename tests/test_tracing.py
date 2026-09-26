@@ -269,3 +269,30 @@ def test_the_summaries_route_carries_the_trace_id_too(spans, monkeypatch):
 
     assert found["retrieve"].parent.span_id == found["floatchat.answer"].context.span_id
     assert result["trace_id"] == format(found["floatchat.answer"].context.trace_id, "032x")
+
+
+def test_a_chart_that_cannot_be_drawn_still_returns_the_rows(spans, monkeypatch):
+    """The generic renderer is guarded like the ocean chart: a failure there
+    must cost the chart, not the answer."""
+    pipeline, svc, _ = _service(monkeypatch, "chart")
+
+    def broken(result, title=None):
+        raise TypeError("renderer bug")
+
+    monkeypatch.setattr(svc, "_summaries", lambda q: [])
+    monkeypatch.setattr(svc, "_column_catalog", lambda: None)
+    monkeypatch.setattr(pipeline, "generate_sql", lambda *a, **k: ("SELECT 1 FROM profiles", False))
+    monkeypatch.setattr(pipeline, "validate", lambda sql, **_: sql + " LIMIT 500")
+    monkeypatch.setattr(
+        pipeline,
+        "run_query",
+        lambda sql, **_: {"columns": ["n"], "rows": [[1]], "row_count": 1, "elapsed_ms": 1.0},
+    )
+    monkeypatch.setattr(pipeline, "render", broken)
+
+    result = svc.answer("plot the count")
+
+    assert result["answered"] is True
+    assert result["rows"] == [[1]]
+    assert result["chart_png"] is None
+    assert _by_name(spans)["chart.render"].status.status_code is StatusCode.ERROR

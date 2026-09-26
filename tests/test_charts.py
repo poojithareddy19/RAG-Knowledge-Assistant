@@ -139,3 +139,26 @@ def test_an_irregular_numeric_axis_falls_back_to_the_median():
     depths = pd.Series([5.0, 10.0, 15.0, 20.0, 60.0])
 
     assert find_gaps(depths) == [(20.0, 60.0)]
+
+
+def test_a_short_time_series_still_renders():
+    """Three yearly points are too few to establish a step, so there are no
+    gaps and nothing to shade. The band inset used to be computed anyway, from
+    a step of None, and the chart route answered with a 500."""
+    rows = [[datetime(y, 1, 1, tzinfo=UTC), n] for y, n in [(2021, 5), (2022, 7), (2023, 6)]]
+
+    png, kind = render({"columns": ["yr", "profile_count"], "rows": rows})
+
+    assert kind == "line"
+    assert png.startswith(b"\x89PNG")
+
+
+def test_the_band_uses_the_step_of_the_real_points():
+    """The inserted break rows sit mid-gap, off the 1 January grid, so the
+    step has to be read before they are added or it falls back to a median."""
+    rows = [[datetime(y, 1, 1, tzinfo=UTC), 1] for y in YEARS]
+
+    png, kind = render({"columns": ["yr", "n"], "rows": rows})
+
+    assert kind == "line"
+    assert png.startswith(b"\x89PNG")

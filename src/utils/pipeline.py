@@ -380,12 +380,20 @@ class RAGService:
         if want_chart:
             # The matplotlib render runs whatever the shape, because the API
             # contract promises a PNG and an image client has to keep working.
-            with span("chart.render") as step:
-                png, generic_kind = render(
-                    result,
-                    title=question,
-                )
-                set_attributes(step, **{"floatchat.chart_kind": generic_kind})
+            # Guarded like the ocean chart: a chart that cannot be drawn should
+            # cost the user the chart, not the answer. It was unguarded, so a
+            # bug in the renderer surfaced as an HTTP 500 with the rows lost.
+            png, generic_kind = None, None
+
+            try:
+                with span("chart.render") as step:
+                    png, generic_kind = render(
+                        result,
+                        title=question,
+                    )
+                    set_attributes(step, **{"floatchat.chart_kind": generic_kind})
+            except Exception:
+                pass
 
             kind = kind or generic_kind
 
