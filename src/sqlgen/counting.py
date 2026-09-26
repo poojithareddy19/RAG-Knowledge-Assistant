@@ -106,6 +106,73 @@ def measurements_undercounted(question: str, sql: str) -> str | None:
     )
 
 
+# Words that make quality part of the question, so a QC filter is asked for.
+_ASKS_ABOUT_QUALITY = re.compile(
+    r"\b(quality|qc|flags?|good|bad|valid|invalid|passed|pass|failed|fail|"
+    r"reliable|clean|probably)\b",
+    re.I,
+)
+
+# qc_flag = 1, temperature_qc = 1, oxygen_qc IN (1, 2) ...
+_QC_KEPT_GOOD = re.compile(
+    r"\b(?:\w+\.)?(qc_flag|\w+_qc)\s*(?:=\s*'?1'?(?!\d)|in\s*\(\s*'?1)",
+    re.I,
+)
+
+# A measured value required to be present, and the words a question uses for it.
+_REQUIRED_VALUE = re.compile(
+    r"\b(?:\w+\.)?(temperature_c|salinity_psu|oxygen_umol_kg|chlorophyll_mg_m3|"
+    r"nitrate_umol_kg|ph_total|backscatter_700|pressure_dbar)\s+is\s+not\s+null",
+    re.I,
+)
+_NAMED_BY = {
+    "temperature_c": r"temperature|temp",
+    "salinity_psu": r"salinity|salt",
+    "oxygen_umol_kg": r"oxygen",
+    "chlorophyll_mg_m3": r"chlorophyll",
+    "nitrate_umol_kg": r"nitrate",
+    "ph_total": r"ph",
+    "backscatter_700": r"backscatter",
+    "pressure_dbar": r"pressure|depths?|deep|deeper|dbar|decibars?",
+}
+
+
+def quality_filter_unasked(question: str, sql: str) -> str | None:
+    """Why this measurement count drops rows the question did not exclude, or None.
+
+    The schema catalog says to ignore rows where qc_flag <> 1, written for
+    averages, and the model applies it to counts. Asked how many measurements
+    are deeper than 1000 decibars, it added qc_flag = 1 and temperature_c IS
+    NOT NULL and counted only the good temperature readings; asked for the
+    measurements in the Southern Indian Ocean, it added qc_flag = 1 again. The
+    gold answers count every row, so a count keeps them all unless the
+    question asks about quality or names the value it requires.
+    """
+    if not question or not sql:
+        return None
+
+    if not _COUNTS_MEASUREMENTS.search(question) or _ASKS_ABOUT_QUALITY.search(question):
+        return None
+
+    dropped = [m.group(0) for m in _QC_KEPT_GOOD.finditer(sql)]
+
+    for m in _REQUIRED_VALUE.finditer(sql):
+        column = m.group(1).lower()
+
+        if not re.search(rf"\b({_NAMED_BY[column]})\b", question, re.I):
+            dropped.append(m.group(0))
+
+    if not dropped:
+        return None
+
+    return (
+        "the question counts measurements and says nothing about quality, "
+        f"but the query keeps only some of them ({', '.join(dropped)}), so it "
+        "counts fewer than were recorded. Count every row: remove those "
+        "conditions, and filter on quality only when the question asks about it"
+    )
+
+
 def count_problem(question: str, sql: str) -> str | None:
     """The first way this query counts the wrong thing, or None."""
     return profiles_overcounted(question, sql) or measurements_undercounted(question, sql)

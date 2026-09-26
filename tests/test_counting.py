@@ -9,7 +9,12 @@ doubt.
 
 import pytest
 
-from src.sqlgen.counting import count_problem, measurements_undercounted, profiles_overcounted
+from src.sqlgen.counting import (
+    count_problem,
+    measurements_undercounted,
+    profiles_overcounted,
+    quality_filter_unasked,
+)
 
 # The model's SQL for the per-region question in the benchmark, verbatim.
 PER_REGION = (
@@ -139,3 +144,69 @@ def test_no_reference_query_trips_either_count_check():
 
     for row in rows:
         assert count_problem(row["question"], row["expected_sql"]) is None, row["question"]
+
+
+# ---------------------------------------------------------------------------
+# A quality filter the question never asked for
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question, sql, dropped",
+    [
+        # The model's SQL in the benchmark, verbatim.
+        ("How many measurements are deeper than 1000 decibars?",
+         "SELECT COUNT(*) FROM measurements WHERE pressure_dbar > 1000 "
+         "AND qc_flag = 1 AND temperature_c IS NOT NULL",
+         ["qc_flag = 1", "temperature_c IS NOT NULL"]),
+        # The repaired SQL in the live region-column runs.
+        ("How many measurements belong to floats in the Southern Indian Ocean?",
+         "SELECT COUNT(*) FROM measurements m JOIN profiles p ON p.profile_id = m.profile_id "
+         "WHERE p.region = 'Southern Indian Ocean' AND m.qc_flag = 1",
+         ["m.qc_flag = 1"]),
+        ("How many measurements have been recorded?",
+         "SELECT count(*) FROM measurements WHERE temperature_qc IN (1, 2)",
+         ["temperature_qc IN (1"]),
+    ],
+)
+def test_a_count_that_drops_rows_nobody_excluded_is_caught(question, sql, dropped):
+    reason = quality_filter_unasked(question, sql)
+
+    assert reason is not None
+    for condition in dropped:
+        assert condition in reason
+
+
+@pytest.mark.parametrize(
+    "question, sql",
+    [
+        # Quality is the question.
+        ("How many measurements failed quality control?",
+         "SELECT count(*) FROM measurements WHERE qc_flag <> 1"),
+        ("How many good measurements are deeper than 1000 decibars?",
+         "SELECT count(*) FROM measurements WHERE pressure_dbar > 1000 AND qc_flag = 1"),
+        # The value is named, so requiring it is the question.
+        ("How many measurements have a backscatter reading?",
+         "SELECT count(*) FROM measurements WHERE backscatter_700 IS NOT NULL"),
+        ("How many measurements are deeper than 1000 decibars?",
+         "SELECT count(*) FROM measurements WHERE pressure_dbar > 1000 AND pressure_dbar IS NOT NULL"),
+        # Not a measurement count: averages should drop bad rows.
+        ("What is the average surface temperature?",
+         "SELECT avg(temperature_c) FROM measurements WHERE qc_flag = 1 AND temperature_c IS NOT NULL"),
+        # A count that keeps every row.
+        ("How many measurements are deeper than 1000 decibars?",
+         "SELECT count(*) FROM measurements WHERE pressure_dbar > 1000"),
+    ],
+)
+def test_counts_that_are_asked_to_filter_or_do_not_filter_pass(question, sql):
+    assert quality_filter_unasked(question, sql) is None
+
+
+def test_no_reference_query_is_flagged_for_quality():
+    import csv
+
+    with open("data/evaluation/ocean_questions.csv", encoding="utf-8") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["expected_sql"].strip()]
+
+    for row in rows:
+        assert quality_filter_unasked(row["question"], row["expected_sql"]) is None, row["question"]

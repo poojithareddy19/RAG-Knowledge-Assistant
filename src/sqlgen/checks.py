@@ -19,7 +19,7 @@ fix.
 from __future__ import annotations
 
 from src.sqlgen.context_filters import copied_filter
-from src.sqlgen.counting import count_problem
+from src.sqlgen.counting import count_problem, quality_filter_unasked
 from src.sqlgen.period import period_problem
 from src.sqlgen.region_column import region_misplaced
 
@@ -29,6 +29,7 @@ def mismatches(question: str, sql: str, context: str = "") -> list[str]:
     found = [
         period_problem(question, sql),
         count_problem(question, sql),
+        quality_filter_unasked(question, sql),
         copied_filter(question, sql, context),
         region_misplaced(question, sql),
     ]
