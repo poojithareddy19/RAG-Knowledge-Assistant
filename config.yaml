@@ -1,5 +1,5 @@
 # ============================================================================
-# Production RAG Knowledge Assistant — central configuration
+# FloatChat: RAG conversational interface for ARGO ocean data. Central configuration.
 # ----------------------------------------------------------------------------
 # Anything that changes system behaviour lives here.
 # Secrets (API keys) belong in .env.
@@ -7,18 +7,12 @@
 
 app:
   name: "FloatChat"
-  version: "0.2.0"
+  version: "0.3.0"
 
 paths:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
-  vector_store_dir: "data/vector_store"
   log_dir: "logs"
-
-ingestion:
-  chunk_size: 1000
-  chunk_overlap: 150
-  min_chunk_chars: 40
 
 embeddings:
   model_name: "BAAI/bge-small-en-v1.5"
@@ -27,26 +21,6 @@ embeddings:
   normalize: true
   batch_size: 32
   device: "cpu"
-
-vectorstore:
-  backend: "pgvector"
-  metric: "cosine"
-  table: "doc_chunks"
-  dimension: 384
-
-retrieval:
-  top_k: 5
-  fetch_k: 20
-  use_reranker: true
-  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-confidence:
-  weights:
-    mean_similarity: 0.6
-    support: 0.3
-    spread: 0.1
-  support_floor: 0.35
-  answer_threshold: 0.45
 
 generation:
   provider: "ollama"
@@ -58,12 +32,10 @@ generation:
 router:
   enabled: true
   model: "llama3.1:latest"
-  fallback: "documents"
-  max_rows: 5000
-  timeout_ms: 5000
-  # Wall clock allowed for the model to produce SQL. A cold model load
-  # can take most of this on its own.
-  gen_timeout_seconds: 120
+  # Where a question goes when neither the rules nor the model can place it.
+  # The summaries path declines when nothing is close enough, so an unplaced
+  # question ends in a refusal rather than in SQL written against a guess.
+  fallback: "summaries"
 
 multilingual:
   # A question in another language is translated to English at the edge and the
@@ -110,8 +82,11 @@ sql:
   repair: true
 
 semantic:
-  # Natural-language summaries of what the measurements tables hold, retrieved
-  # and handed to the SQL generator so it is not guessing what exists.
+  # Natural-language summaries of what the measurements tables hold, one per
+  # float and one per region, embedded with pgvector. They are read twice: as
+  # context before SQL is written, so the model is not guessing what exists,
+  # and as the corpus of the summaries route, which answers questions about
+  # what the database holds with the float or region as the citation.
   enabled: true
   table: "data_summaries"
   top_k: 4
@@ -120,13 +95,24 @@ semantic:
   # off-topic question pull in summaries that have nothing to do with it.
   min_similarity: 0.55
 
+  # The summaries route declines below this confidence rather than calling
+  # the model. Confidence is computed from the retrieval scores alone; see
+  # src/semantic/confidence.py for how the three components combine.
+  answer_threshold: 0.45
+  confidence:
+    weights:
+      mean_similarity: 0.6
+      support: 0.3
+      spread: 0.1
+    support_floor: 0.55
+
 cache:
   enabled: true
   file: "data/cache/sql_cache.json"
   ttl_seconds: 604800
 
 api:
-  title: "Grounded Data Assistant"
+  title: "FloatChat"
   cors_origins:
     - "*"
 

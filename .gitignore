@@ -30,3 +30,6 @@ docker-compose.override.yml
 eval_*.log
 build_*.log
 data/evaluation/sql_eval_*.csv
+
+# Per-question output of the summaries generation evaluation, same reasoning.
+data/evaluation/summary_generation.csv

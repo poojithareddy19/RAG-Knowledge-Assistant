@@ -195,3 +195,50 @@ def test_years_and_depths_are_not_mistaken_for_identifiers():
     # Four digits is a year or a pressure, not a WMO number. Treating one as a
     # float id would pull an unrelated summary into the prompt.
     assert IDENTIFIER.findall("mean temperature in 2020 below 1000 dbar") == []
+
+
+def test_refresh_removes_summaries_of_subjects_that_are_gone(monkeypatch):
+    """The upsert on its own never deleted anything. When the synthetic floats
+    were replaced by real ones, forty summaries of floats that no longer existed
+    stayed in the index and were retrieved as context."""
+    import contextlib
+
+    import src.semantic.index as index
+
+    executed = []
+
+    class FakeCursor:
+        rowcount = 40
+
+        def executemany(self, sql, rows):
+            executed.append(("upsert", sql, list(rows)))
+
+        def execute(self, sql, params):
+            executed.append(("prune", sql, params))
+
+    @contextlib.contextmanager
+    def fake_cursor(*args, **kwargs):
+        yield FakeCursor()
+
+    class FakeEmbedder:
+        def embed_passages(self, texts):
+            return [[0.0] * 3 for _ in texts]
+
+    monkeypatch.setattr(
+        index,
+        "collect",
+        lambda: [("float", "1901393", "a real float"), ("region", "Arabian Sea", "a region")],
+    )
+    monkeypatch.setattr(index, "cursor", fake_cursor)
+    monkeypatch.setattr(index, "get_embedding_model", lambda: FakeEmbedder())
+    monkeypatch.setattr(index, "get_config", lambda: {"semantic": {}})
+
+    result = index.SemanticIndex(table="data_summaries").refresh()
+
+    prune = [step for step in executed if step[0] == "prune"]
+
+    assert len(prune) == 1
+    assert "DELETE FROM data_summaries" in prune[0][1]
+    # Everything just rebuilt is kept; anything else is removed.
+    assert prune[0][2] == (["float", "region"], ["1901393", "Arabian Sea"])
+    assert result["removed"] == 40

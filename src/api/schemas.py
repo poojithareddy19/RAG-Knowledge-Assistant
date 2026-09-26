@@ -20,16 +20,10 @@ class AskRequest(BaseModel):
         min_length=3,
         max_length=500,
     )
-    route_override: Literal["documents", "data", "chart"] | None = None
+    route_override: Literal["summaries", "data", "chart"] | None = None
     # Opaque, client chosen. Supplying the same one on a later request is what
     # makes "and in 2022?" resolvable; omitting it asks a standalone question.
     session_id: str | None = Field(default=None, max_length=128)
-
-
-class ExportRequest(AskRequest):
-    """Request body for /export: an /ask question plus the file format."""
-
-    format: Literal["csv", "parquet", "netcdf"] = "csv"
 
 
 class AskResponse(BaseModel):
@@ -41,6 +35,8 @@ class AskResponse(BaseModel):
     confidence: float
     refused: bool = False
     reason: str = ""
+    # On the summaries route: the float or region each cited summary describes,
+    # with its text and similarity, so the answer can be checked against it.
     citations: list[dict[str, Any]] = []
     context_used: list[str] = []
     generated_sql: str | None = None
@@ -50,11 +46,6 @@ class AskResponse(BaseModel):
     # what the model first produced, which a client comparing it against
     # the question should be able to see.
     sql_repaired: bool | None = None
-    # Set when a fixed MCP tool answered instead of generated SQL, for example
-    # the floats nearest a point. generated_sql is then None, and these say
-    # which tool ran with what, which is the thing a reader checks instead.
-    mcp_tool: str | None = None
-    mcp_arguments: dict[str, Any] | None = None
     columns: list[str] | None = None
     rows: list[list[Any]] | None = None
     row_count: int | None = None
@@ -75,6 +66,7 @@ class HealthResponse(BaseModel):
     """Response body returned by the /health endpoint."""
 
     status: str
-    documents_indexed: int
+    # One summary per float and per region in the semantic index.
+    summaries_indexed: int
     measurements: int
     llm_reachable: bool

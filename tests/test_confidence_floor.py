@@ -1,4 +1,4 @@
-from src.retrieval.confidence import combine_signals
+from src.semantic.confidence import combine_signals
 
 WEIGHTS = {
     "mean_similarity": 0.6,

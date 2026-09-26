@@ -98,8 +98,8 @@ which is what makes the validator a second line rather than the only one.
 
 ## Health
 
-`GET /health` reports indexed documents, measurement count and whether the
-model is reachable. Both images carry a `HEALTHCHECK`, and `web` waits for the
+`GET /health` reports the number of summaries in the semantic index, the
+measurement count and whether the model is reachable. Both images carry a `HEALTHCHECK`, and `web` waits for the
 API to be healthy rather than merely started.
 
 An orchestrator wanting a liveness probe should use `/health` on the API and
@@ -129,7 +129,7 @@ machine that wrote it, against the real archive:
 | --- | --- |
 | `docker build` of the API image | 3.43 GB, torch from the CPU index |
 | `docker build` of the front end | 73.8 MB, bundle present, `nginx -t` passes standalone |
-| `GET /api/health` through nginx | 680 documents, 175,364 measurements, model reachable |
+| `GET /api/health` through nginx | 175,364 measurements, model reachable (the health body named the manual chunks at the time; it names the summaries now) |
 | `POST /api/ask` through nginx | HTTP 200 in 8 s, the scope gate's refusal, request seen by the API from the web container's address |
 | `GET /` | the front end, with its fingerprinted bundle |
 | `docker compose ps` | all three services healthy, only port 80 published |

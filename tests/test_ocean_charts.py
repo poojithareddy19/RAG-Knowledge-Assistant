@@ -347,3 +347,12 @@ def test_a_single_cast_that_filled_the_limit_is_labelled_as_possibly_short():
 
     assert len(figure.data) == 1
     assert "may stop short" in figure.layout.title.text
+
+
+def test_a_result_that_filled_its_limit_is_recognised():
+    """What tells the profile chart that its last cast may be cut off."""
+    from src.utils.pipeline import _hit_limit
+
+    assert _hit_limit("SELECT 1 FROM measurements LIMIT 500", 500)
+    assert not _hit_limit("SELECT 1 FROM measurements LIMIT 500", 499)
+    assert not _hit_limit("SELECT 1 FROM measurements", 500)

@@ -1,4 +1,10 @@
-﻿services:
+﻿# Named explicitly rather than taken from the folder. Compose otherwise derives
+# the project name from the directory, and prefixes every volume with it, so
+# renaming or re-cloning the folder under another name silently pointed the app
+# at a new, empty database while the real one sat unused in the old volume.
+name: floatchat-argo-rag
+
+services:
   db:
     # Built rather than pulled: this project needs pgvector for the embeddings
     # and PostGIS for the basin polygons, and no published image carries both.

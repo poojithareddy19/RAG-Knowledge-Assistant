@@ -13,12 +13,10 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 
-from src.api.schemas import AskRequest, AskResponse, ExportRequest, HealthResponse
+from src.api.schemas import AskRequest, AskResponse, HealthResponse
 from src.utils.config import get_config
 from src.utils.db import fetch_all
-from src.utils.export import to_csv_bytes, to_netcdf_bytes, to_parquet_bytes
 from src.utils.pipeline import RAGService
 
 load_dotenv()
@@ -26,10 +24,11 @@ load_dotenv()
 cfg = get_config()
 
 app = FastAPI(
-    title=cfg.api.get("title", "Grounded Data Assistant"),
-    version="0.2.0",
+    title=cfg.api.get("title", "FloatChat"),
+    version=str(cfg.app.get("version", "0.3.0")),
     description=(
-        "Grounded answers over documents and ARGO ocean measurements."
+        "Grounded answers over ARGO ocean float data: summaries of what the "
+        "archive holds, and SQL generated against the measurements."
     ),
 )
 
@@ -84,8 +83,8 @@ def health() -> HealthResponse:
     """Check database and LLM dependencies."""
 
     try:
-        _, docs = fetch_all(
-            "SELECT count(*) FROM doc_chunks"
+        _, summaries = fetch_all(
+            "SELECT count(*) FROM data_summaries"
         )
         _, meas = fetch_all(
             "SELECT count(*) FROM measurements"
@@ -114,54 +113,9 @@ def health() -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        documents_indexed=docs[0][0],
+        summaries_indexed=summaries[0][0],
         measurements=meas[0][0],
         llm_reachable=llm_ok,
-    )
-
-
-@app.post("/export")
-def export(req: ExportRequest) -> StreamingResponse:
-    """Answer a question and return the rows as a file rather than as JSON.
-
-    The same body as /ask plus a format. Streamed with a filename, so a browser
-    or curl -O saves something usable instead of printing bytes to a terminal.
-    """
-    svc = service()
-
-    result = svc.answer(
-        req.question,
-        history=_history.get(req.session_id) if req.session_id else None,
-    )
-
-    if result.get("refused") or not result.get("columns"):
-        raise HTTPException(
-            status_code=422,
-            detail=result.get("answer", "the question produced no result set"),
-        )
-
-    # Every row, not the hundred /ask returns for display.
-    result = svc.complete_result(result)
-
-    if req.format == "csv":
-        blob = to_csv_bytes(result)
-        media = "text/csv"
-        name = "result.csv"
-    elif req.format == "parquet":
-        blob = to_parquet_bytes(result, title=req.question)
-        media = "application/vnd.apache.parquet"
-        name = "result.parquet"
-    else:
-        blob = to_netcdf_bytes(result, title=req.question)
-        media = "application/x-netcdf"
-        name = "result.nc"
-
-    return StreamingResponse(
-        iter([blob]),
-        media_type=media,
-        headers={
-            "Content-Disposition": f'attachment; filename="{name}"',
-        },
     )
 
 
@@ -171,9 +125,9 @@ def ask(req: AskRequest) -> AskResponse:
 
     svc = service()
 
-    if req.route_override == "documents":
-        result = svc.answer_from_documents(req.question)
-        result["route"] = "documents"
+    if req.route_override == "summaries":
+        result = svc.answer_from_summaries(req.question)
+        result["route"] = "summaries"
         result["route_decided_by"] = "override"
 
     elif req.route_override in ("data", "chart"):

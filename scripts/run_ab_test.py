@@ -1,5 +1,12 @@
 """Does adding example queries to the prompt improve SQL accuracy?"""
 
+import sys
+from pathlib import Path
+
+# Run from a plain checkout. `python scripts/x.py` puts scripts/ on sys.path,
+# not the repository, so `src` is not importable without this line.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import json
 
 import pandas as pd

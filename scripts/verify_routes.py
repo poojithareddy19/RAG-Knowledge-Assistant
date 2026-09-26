@@ -8,8 +8,14 @@ Usage:
     python -m scripts.verify_routes
 """
 
-import pathlib
 import sys
+from pathlib import Path
+
+# Run from a plain checkout. `python scripts/x.py` puts scripts/ on sys.path,
+# not the repository, so `src` is not importable without this line.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pathlib
 import time
 
 from src.utils.pipeline import RAGService

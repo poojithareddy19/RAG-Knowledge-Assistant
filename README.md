@@ -2,23 +2,23 @@
 
 Ask the Argo float archive a question in your own language and get an answer you can check.
 
-Two kinds of question, one system. **What does this data mean?** is answered from the Argo manuals, with the document and page behind every claim. **What does this data say?** is answered by SQL generated against the measurements database, shown to you before you are asked to believe the numbers. A router decides which, and when a question needs both it answers from both, so the user asks a question rather than choosing a tool.
+Two kinds of question, one system. **What does the archive hold?** is answered from one-sentence summaries of every float and every region in the database, retrieved by embedding, with the float or region behind every claim. **What does the data say?** is answered by SQL generated against the measurements database, shown to you before you are asked to believe the numbers. A router decides which, so the user asks a question rather than choosing a tool.
 
-Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
+Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The summaries path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, CSV, Parquet and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server the chat itself calls. Measured: [0.567 execution accuracy](#results) on 67 SQL questions across two models, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer of float and region summaries in pgvector that both answers questions directly with citations and tells the SQL generator what the database actually holds, text-to-SQL with a four-layer safety path, a rule-first query router, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, a Streamlit dashboard, a FastAPI service and a React front end, with the Docker stage proven and images published from CI. Measured: [0.567 execution accuracy](#results) on 67 SQL questions across two models, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.957](#retrieval-results) on 23 summary questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
 ## Problem
 
+This is a build against problem statement SIH25040 from the Ministry of Earth Sciences: a retrieval-augmented conversational interface over ARGO ocean data, for the Indian Ocean, with a vector store of metadata and summaries, text-to-SQL over a relational store, and a dashboard that shows profiles, trajectories and comparisons.
+
 Argo is about 4,000 autonomous floats drifting the world ocean, diving to 2,000 decibars and surfacing every ten days with a profile of temperature and salinity. All of it is public. Almost none of it is reachable.
 
 Reaching it means knowing the NetCDF layout, the QC flag conventions, which variable to read in which data mode, and SQL. A researcher, a student or a policymaker who can describe what they want in one sentence cannot get it.
 
-Worse, the two things they need to know are kept apart. The numbers live in the archive; what the numbers mean lives in a 118-page quality control manual and a 99-page format manual. Asking "what is the average surface temperature in the Arabian Sea" and asking "what does a QC flag of 4 mean" are the same user, minutes apart, and answering only one of them is answering neither.
-
-So this is one assistant over both. The failure mode is the same on both paths, a fluent and unverifiable answer, so both are built with the evidence surfaced and a refusal path.
+Two questions come first, minutes apart, from the same user. "What is in here?" is answered by describing the floats and regions the archive holds. "What is the average surface temperature in the Arabian Sea?" is answered by a query. The failure mode is the same on both paths, a fluent and unverifiable answer, so both are built with the evidence surfaced and a refusal path.
 
 ## Architecture
 
@@ -28,12 +28,12 @@ So this is one assistant over both. The failure mode is the same on both paths, 
                    ┌────────▼────────┐
                    │     router      │  rules first, model fallback
                    └────┬───────┬────┘
-              documents │       │ data / chart
+              summaries │       │ data / chart
           ┌─────────────▼─┐   ┌─▼──────────────────────────┐
           │ embed query   │   │ retrieve data summaries    │
-          │ pgvector top-k│   │   (what the db holds)      │
-          │ cross-encoder │   │ generate SQL (cached)      │
-          │   rerank      │   │ validate: SELECT only,     │
+          │ named float   │   │   (what the db holds)      │
+          │   looked up   │   │ generate SQL (cached)      │
+          │ pgvector top-k│   │ validate: SELECT only,     │
           │ confidence    │   │ allowed tables, real       │
           │   gate        │   │ columns, LIMIT capped      │
           │               │   │ execute as read-only user  │
@@ -42,7 +42,7 @@ So this is one assistant over both. The failure mode is the same on both paths, 
               decline                 rows ──▶ optional chart
                   │                     │
                   ▼                     ▼
-        answer + citations        table + the SQL that made it
+      answer + float/region cited  table + the SQL that made it
                   │                     │
                   └────────┬────────────┘
                            ▼
@@ -53,41 +53,29 @@ So this is one assistant over both. The failure mode is the same on both paths, 
 
 A schema tells a model which columns exist. It cannot tell it that float 1901393 is real, worked the Arabian Sea, and stopped reporting in 2021. Without that, "what did 1901393 measure off Goa" is answered by a model guessing whether such a float exists.
 
-So every float and every region is summarised into a sentence, embedded, and stored in its own pgvector table ([`src/semantic/`](src/semantic/)):
+So every float and every region is summarised into a sentence, embedded, and stored in a pgvector table ([`src/semantic/`](src/semantic/)):
 
-> ARGO float 1901393 is an APEX platform and part of project ARGO INDIA. It recorded 142 profiles from 2015-03-02 to 2021-11-18. It reported in the Arabian Sea and Bay of Bengal. Its measurements span 4.0 to 1998.0 decibars of pressure, roughly that depth in metres.
+> ARGO float 1902458 is a NAVIS_A platform and part of project GO-BGC, WHOI. It recorded 20 profiles from 2023-06-14 to 2023-12-21. It reported in the Arabian Sea. It is a BGC float and also measures dissolved oxygen, chlorophyll, pH and particle backscatter.
 
-The summaries closest to a question are retrieved and handed to the SQL generator before it writes anything, under an explicit instruction never to quote a number out of them. They resolve names and ranges; the query computes every value. Both UIs show which summaries were used, so the grounding is inspectable rather than invisible.
+The table does two jobs.
 
-They live in their own table rather than alongside the manual chunks, because a question about what a QC flag means must not retrieve a float summary, and a question about a float must not retrieve a page of the format manual.
+**It is the corpus of the summaries route.** A question about what the archive holds, "tell me about float 1902458", "which floats measure oxygen in the Arabian Sea", "describe the Bay of Bengal data", is answered from the nearest summaries by a model that is forbidden prior knowledge and required to cite them. The citation is the float or region itself, which a reader can then check against the tables the summary was computed from. A float named in the question is looked up literally rather than embedded, because float summaries are near-identical sentences whose only distinguishing token is a long number, which is what embeddings represent worst.
 
-The router ([`src/router/classifier.py`](src/router/classifier.py)) tries cheap regex rules first and only pays for a model call on the ambiguous cases. Its fallback route is configurable, so a router outage degrades to a known behaviour rather than an error. A fourth route, `both`, is described below.
+**It is the context for SQL generation.** The summaries closest to a data question are handed to the SQL generator before it writes anything, under an explicit instruction never to quote a number out of them. They resolve names and ranges; the query computes every value. Both UIs show which summaries were used, so the grounding is inspectable rather than invisible.
 
-### Answering from both at once
+The router ([`src/router/classifier.py`](src/router/classifier.py)) tries cheap regex rules first and only pays for a model call on the ambiguous cases. Descriptive phrasings such as "tell me about" and "describe" go to the summaries; quantities, averages and counts go to SQL; "plot", "map" and "track" go to a chart. Its fallback route is the summaries path, which declines when nothing is close enough, so a question the router cannot place ends in a refusal rather than in SQL written against a guess.
 
-"What does the QC manual say about a flag of 4, and how many of my profiles have one" is two questions wearing one coat, and for most of this project's life it got one answer. The `both` route answers it from both sources.
+### Two independent hallucination guards, on the summaries path
 
-The compound question is **split before either backend sees it** ([`src/router/planner.py`](src/router/planner.py)). This is not decoration. Sent whole to the retriever, the counting clause is noise in the embedding; sent whole to the SQL generator, the manual clause invites a join against a table that does not exist. Each backend answers its own half, and the halves are rejoined by a synthesis step ([`src/generation/synthesis.py`](src/generation/synthesis.py)).
-
-That synthesis step is the only place in the project where a model is shown two sources at once, which makes it the only place that can invent a relationship between them. It is written against that. It is given the document answer and the rows and told to join them with a sentence, not to reason about them: it may not round, total, average or compare, because every number in the result is already correct and any arithmetic it does is arithmetic nobody checked.
-
-**Nothing is lost when the extra machinery fails.** A split that cannot be made sends the whole question to each backend, which is what the system did before. A synthesis that cannot be written falls back to both answers under their own headings, which is a worse answer and a true one. A half that refuses is not an error, it is one source having nothing to say, and the answer is written from the other; only the case where neither half answers is a refusal. Both raw results travel back under `parts` and the page shows them side by side, because the one answer in the system written from two sources is the one a reader most needs to be able to take apart.
-
-Combined confidence is the **lower** of the two halves that answered. An answer resting on a confident manual passage and an empty query is not a confident answer.
-
-The cost is honest: a combined question is four model calls where a data question is one. The rule layer keeps it rare, routing to `both` only when a question names a written source *and* asks for a quantity, so "what does the manual say about temperature limits" stays a document question.
-
-### Two independent hallucination guards, on the document path
-
-1. **Retrieval-side.** A confidence threshold over retrieval signals, evaluated before the LLM is called. Unanswerable questions are refused without spending a token.
-2. **Generation-side.** The prompt requires the model to emit `INSUFFICIENT_CONTEXT` when the passages do not support an answer, checked after generation.
+1. **Retrieval-side.** A confidence threshold over retrieval signals, evaluated before the model is called. Unanswerable questions are refused without spending a token.
+2. **Generation-side.** The prompt requires the model to emit `INSUFFICIENT_CONTEXT` when the summaries do not support an answer, checked after generation.
 
 Two rather than one because they fail independently: the first catches "nothing relevant was retrieved," the second catches "something was retrieved but it does not answer the question."
 
 ### Four layers of protection, on the data path
 
 1. **Prompt.** Schema, conventions and worked examples, with an explicit `UNANSWERABLE` escape hatch.
-2. **Validator** ([`src/sqlgen/validator.py`](src/sqlgen/validator.py)). One statement, `SELECT` only, no forbidden keywords or identifiers, no chaining, only allowed tables, qualified columns checked against the live `information_schema`, and a `LIMIT` capped or injected.
+2. **Validator** ([`src/sqlgen/validator.py`](src/sqlgen/validator.py)). One statement, `SELECT` only, no forbidden keywords or identifiers, no chaining, only allowed tables, qualified columns checked against the live `information_schema`, no join across the two platforms, and a `LIMIT` capped or injected.
 3. **Database role** ([`db/003_roles.sql`](db/003_roles.sql)). Generated SQL runs as `gda_ro`, which holds `SELECT` and nothing else, with writes explicitly revoked.
 4. **Connection.** `read_only` on the session plus a `statement_timeout`, so a pathological query cannot hold the pool.
 
@@ -101,54 +89,47 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 
 | Concern         | Choice                                    | Notes                             |
 | --------------- | ----------------------------------------- | --------------------------------- |
-| Language        | Python 3.12+                              |                                   |
+| Language        | Python 3.11+                              | tested on 3.11 and 3.12           |
 | Ocean ingestion | `xarray` + `netCDF4`                      | Argo NetCDF, drifters over ERDDAP |
-| Structured data | PostgreSQL 16                             | core CTD plus five BGC parameters |
-| Vector store    | pgvector, cosine                          | FAISS backend still selectable    |
+| Structured data | PostgreSQL 16 + PostGIS                   | core CTD plus five BGC parameters |
+| Vector store    | pgvector, cosine, in the same database    | one summary per float and region  |
 | Embeddings      | `sentence-transformers` (BAAI/bge-small)  | swappable via config              |
-| Reranking       | cross-encoder `ms-marco-MiniLM-L-6-v2`    | on by default                     |
-| Chunking        | `langchain-text-splitters`                | isolated to one file              |
 | LLM             | Ollama, local, no API key                 | `llama3.1:8b`, `qwen2.5-coder:7b` |
 | Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
 | Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |
-| Agent interface | MCP server on stdio, and the chat is a client | five tools, none of them raw SQL |
-| UI              | Streamlit (6 pages)                       |                                   |
-| Evaluation      | retrieval metrics + SQL execution metrics |                                   |
+| UI              | Streamlit (5 pages) and a React front end |                                   |
+| Evaluation      | retrieval, generation and SQL execution metrics |                             |
 | Logging         | structured JSONL                          |                                   |
 | Config          | `config.yaml` + environment overrides     |                                   |
+| Delivery        | Docker images built and published by CI   | no cloud host, by choice          |
 
 ## Project structure
 
 ```
-RAG_Assistant/
+FloatChat-ARGO-RAG/
 ├── app.py                     # Streamlit dashboard (presentation only)
 ├── config.yaml                # all tunable behaviour
-├── docker-compose.yml         # pgvector Postgres + the API
+├── docker-compose.yml         # pgvector + PostGIS Postgres, the API
+├── docker-compose.prod.yml    # nginx, the web bundle, the API, the database
 ├── src/
-│   ├── ingestion/   loader.py · chunker.py · argo_netcdf.py · regions.py
+│   ├── ingestion/   argo_netcdf.py · regions.py
 │   ├── embeddings/  embedding_model.py
-│   ├── vectorstore/ pgvector_store.py · vectordb.py      # pgvector or FAISS
-│   ├── retrieval/   retriever.py · reranker.py · confidence.py
-│   ├── generation/  prompt.py · llm.py · answer_generator.py
-│   ├── router/      classifier.py                        # documents | data | chart | both
-│   │               planner.py                           # splits a compound question in two
-│   ├── semantic/    summaries.py · index.py              # what the db holds
-│   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py
-│   ├── charts/      builder.py
-│   ├── analytics/   trend_test.py · clustering.py · forecast.py
-│   ├── evaluation/  metrics.py · evaluator.py · sql_metrics.py · ab_test.py
+│   ├── semantic/    summaries.py · index.py · confidence.py   # the corpus, and the SQL context
+│   ├── generation/  prompt.py · llm.py · answer_generator.py  # the summaries route
+│   ├── router/      classifier.py · rewriter.py · translator.py
+│   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py · scope.py
+│   ├── charts/      builder.py · ocean.py
+│   ├── evaluation/  metrics.py · evaluator.py · generation_metrics.py · sql_metrics.py · ab_test.py
 │   ├── monitoring/  logger.py · analytics.py
 │   ├── api/         main.py · schemas.py                 # FastAPI
 │   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
-├── db/              001_schema.sql · 002_pgvector.sql · 003_roles.sql
-│                    004_argo_qc.sql · 005_semantic_layer.sql
-│                    006_bgc_parameters.sql
+├── db/              001_schema.sql … 009_drop_doc_chunks.sql
 │                    schema_catalog.md · queries/         # 12 reference queries
-├── scripts/         fetch_argo_index.py · load_argo_netcdf.py
-│                    build_semantic_index.py · load_regions.py
-│                    run_ab_test.py
-│                    mcp/            MCP server and the chat's client (five tools, no raw SQL)
+├── scripts/         fetch_argo_index.py · load_argo_netcdf.py · load_regions.py
+│                    load_drifters.py · build_semantic_index.py · check_regions.py
+│                    run_ab_test.py · verify_routes.py
+├── web/             React front end over the API
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
 ```
@@ -160,8 +141,8 @@ Everything routes through `RAGService` in [`src/utils/pipeline.py`](src/utils/pi
 ## Installation
 
 ```bash
-git clone https://github.com/poojithareddy19/RAG-Knowledge-Assistant.git
-cd RAG-Knowledge-Assistant
+git clone https://github.com/poojithareddy19/FloatChat-ARGO-RAG.git
+cd FloatChat-ARGO-RAG
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
@@ -173,7 +154,7 @@ cp .env.example .env
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
-Start PostgreSQL. The image is built from [`db/Dockerfile`](db/Dockerfile) rather than pulled, because this project needs two extensions and no published image carries both: pgvector for the document and summary embeddings, PostGIS for the basin polygons and profile positions. The schema, extensions and read-only role in `db/` are applied automatically on first boot.
+Start PostgreSQL. The image is built from [`db/Dockerfile`](db/Dockerfile) rather than pulled, because this project needs two extensions and no published image carries both: pgvector for the summary embeddings, PostGIS for the basin polygons and profile positions. The schema, extensions and read-only role in `db/` are applied automatically on first boot.
 
 ```bash
 docker compose up -d --build db
@@ -184,16 +165,10 @@ Those files run only when the volume is empty. On a database created before a mi
 ```bash
 docker compose exec -T db psql -U gda -d gda < db/004_argo_qc.sql
 docker compose exec -T db psql -U gda -d gda < db/007_postgis.sql
+docker compose exec -T db psql -U gda -d gda < db/009_drop_doc_chunks.sql
 ```
 
-A database created before the vector index was changed from IVFFlat to HNSW still has the old one, and the old one silently loses most of its recall. Replace it:
-
-```bash
-docker compose exec -T db psql -U gda -d gda -c   "DROP INDEX IF EXISTS idx_chunks_embedding;
-   CREATE INDEX idx_chunks_embedding ON doc_chunks USING hnsw (embedding vector_cosine_ops);"
-```
-
-`007_postgis.sql` adds the `geom` column, backfills it from the existing latitude and longitude, indexes it and creates the `regions` table. It is safe to re-run. The polygons that fill that table are not committed and not downloaded: see [Region polygons](#region-polygons).
+`007_postgis.sql` adds the `geom` column, backfills it from the existing latitude and longitude, indexes it and creates the `regions` table. It is safe to re-run. The polygons that fill that table are not committed and not downloaded: see [Region polygons](#region-polygons). `009` removes the table behind a retrieval path over the Argo manuals that this project no longer has.
 
 The default provider is Ollama, which needs no API key:
 
@@ -223,28 +198,6 @@ python scripts/load_argo_netcdf.py data/raw/argo/
 Re-running is safe: profiles already present are left alone rather than duplicated, so an interrupted load can simply be repeated.
 
 Three ARGO conventions are handled in [`src/ingestion/argo_netcdf.py`](src/ingestion/argo_netcdf.py) rather than left to the caller. Profiles in delayed or adjusted mode are read from their `*_ADJUSTED` variables, because in those modes the raw variables are kept only for provenance and reading them anyway is the most common way to get ARGO wrong. Each parameter's QC flag is stored separately, because a level can have good temperature and bad salinity. And a delayed-mode profile whose `*_ADJUSTED` variables are declared but entirely fill falls back to the raw values, because taking the adjusted pair on the strength of its existence alone yields no depth and no value at every level, and the whole profile is then dropped without a word. One float in the sample lost all 54 of its profiles that way.
-
-### Load the manuals
-
-The document side answers questions about what the data means, so its corpus is the two documents that define that: the [Argo Quality Control Manual for CTD and Trajectory Data](https://doi.org/10.13155/33951) and the [Argo user's manual](https://doi.org/10.13155/29825). Both are public, and neither is committed here.
-
-```bash
-mkdir -p data/raw/manuals
-curl -o data/raw/manuals/argo_quality_control_manual.pdf https://archimer.ifremer.fr/doc/00228/33951/32470.pdf
-curl -o data/raw/manuals/argo_user_manual.pdf https://archimer.ifremer.fr/doc/00187/29825/120885.pdf
-```
-
-Then ingest them:
-
-```python
-from src.utils.pipeline import RAGService
-
-service = RAGService()
-service.ingest_file("data/raw/manuals/argo_quality_control_manual.pdf")
-service.ingest_file("data/raw/manuals/argo_user_manual.pdf")
-```
-
-That is 118 and 99 pages, 309 and 371 chunks. The retrieval gold set in `data/evaluation/questions.csv` is written against these two documents at these versions, so a newer release of either manual will shift page numbers and invalidate the anchors.
 
 ### Region polygons
 
@@ -311,7 +264,7 @@ Two things are visible rather than hidden. The page shows the detected language 
 
 Every failure degrades to the behaviour that existed before the feature: a model that times out, returns nothing, or is switched off leaves the question exactly as typed.
 
-This does not affect the [published numbers](#results). English questions skip the translator entirely and the SQL prompt is unchanged, so the 52-question benchmark measures the same system it did before.
+This does not affect the [published numbers](#results). English questions skip the translator entirely and the SQL prompt is unchanged, so the 67-question benchmark measures the same system it did before.
 
 ### Load the drifting buoys
 
@@ -330,7 +283,6 @@ What that shared shape bought, with no code changed:
 - the trajectory chart draws a buoy track exactly as it draws a float track
 - `region` grouping works across both, from the same basin polygons
 - `ST_DWithin` distance queries work on both, from the same geography column
-- CSV and NetCDF export work on both
 
 What it cost is in [Results](#results), and it is not nothing.
 
@@ -362,12 +314,16 @@ The summaries describe what is in the tables, so they are stale the moment new p
 python scripts/build_semantic_index.py
 ```
 
-Skipping this is not fatal. Retrieval returns nothing, and the SQL generator falls back to working from the schema alone, exactly as it did before the layer existed.
+The rebuild is an upsert followed by a prune, so a float that has left the tables leaves the index in the same transaction. That was not always so: forty summaries of synthetic floats outlived the synthetic data by a week and were retrieved as context for floats that did not exist.
+
+Skipping the rebuild costs both routes. The summaries route has nothing to answer from and declines; the SQL generator falls back to working from the schema alone, exactly as it did before the layer existed.
+
+One thing the rebuild found, worth recording because it is the kind of bug a summary hides well. A biogeochemical reading is stored as its own row with no temperature on it and no core QC flag, and the summary query filtered the join on the core flag. Every one of the 49,296 oxygen readings was thrown away before it was counted, so not one of the sixteen floats that carry a sensor was described as carrying one, and "which floats measure oxygen" had nothing to find. Each BGC parameter is now counted under its own flag.
 
 ## Configuration
 
-- **`config.yaml`** holds behaviour: chunk size, embedding model, top-k, confidence weights and threshold, router and SQL limits, cache TTL.
-- **`.env`** holds secrets, provider selection and database URLs. Any `SECTION__KEY` variable overrides the matching `config.yaml` value, for example `RETRIEVAL__TOP_K=8`.
+- **`config.yaml`** holds behaviour: embedding model, top-k, the similarity floor, confidence weights and threshold, router and SQL limits, cache TTL.
+- **`.env`** holds secrets, provider selection and database URLs. Any `SECTION__KEY` variable overrides the matching `config.yaml` value, for example `SEMANTIC__TOP_K=8`.
 
 Two database URLs are required. `DATABASE__URL` owns the schema and runs ingestion; `DATABASE__READONLY_URL` is what generated SQL executes as. Keeping them separate is the point.
 
@@ -377,7 +333,7 @@ Two database URLs are required. `DATABASE__URL` owns the schema and runs ingesti
 streamlit run app.py
 ```
 
-Pages: Home, Ask Questions, Ocean Data, Evaluation, Monitoring, Settings. The document corpus is the two Argo manuals, loaded by the snippet above rather than uploaded through the UI, because the corpus is fixed rather than something a user curates.
+Pages: Home, Ask, Evaluation, Monitoring, Settings. Ask is one box over both routes: a thread rather than a single question, with each turn keeping its own chart, table, SQL or citations.
 
 Or the HTTP service:
 
@@ -385,11 +341,9 @@ Or the HTTP service:
 uvicorn src.api.main:app --reload
 ```
 
-`POST /ask` takes `{"question": "...", "route_override": null, "session_id": null}` and returns the answer with citations or with the generated SQL, rows and timings. Passing the same `session_id` on a later request is what makes a follow up like "and in 2022?" resolvable. `GET /health` reports indexed documents, measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
+`POST /ask` takes `{"question": "...", "route_override": null, "session_id": null}` and returns the answer with citations or with the generated SQL, rows and timings. `route_override` is one of `summaries`, `data` or `chart` when the caller wants to bypass the router. Passing the same `session_id` on a later request is what makes a follow up like "and in 2022?" resolvable. `GET /health` reports how many summaries are indexed, the measurement count and whether the LLM is reachable. Interactive docs at `/docs`.
 
-`POST /export` takes the same body plus `"format": "csv" | "netcdf"` and streams the result set as a file. It returns every row rather than the hundred `/ask` includes for display, and the NetCDF carries units, column descriptions and the generating SQL in its attributes, so a download stays readable and reproducible after it leaves the API.
-
-Both UIs show the same two things the answer depends on: for documents, the retrieved chunks with similarity scores and the exact prompt sent to the model; for data, the SQL. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
+Both UIs show the same two things the answer depends on: for the summaries, the retrieved float and region summaries with their similarity scores and the exact prompt sent to the model; for data, the SQL. If an answer looks wrong, you can see immediately whether retrieval failed, generation failed, or the query was simply right and surprising.
 
 ### The React front end
 
@@ -424,115 +378,52 @@ There is no cloud host, by choice. The images are published and the arrangement 
 pytest -q
 ```
 
-Covers the deterministic core: chunking, metrics, confidence, vector-store contract, router rules, SQL cache and the SQL validator. No API key, database or GPU required. The validator suite runs every query in `db/queries/` through the validator, so a reference query the validator would reject fails the build.
+Covers the deterministic core: the summary wording, the summaries route with a fake index and a fake model, retrieval metrics, confidence, router rules, the SQL cache, the scope gate and the SQL validator. No API key, database or GPU required. The validator suite runs every query in `db/queries/` through the validator, so a reference query the validator would reject fails the build.
 
 ---
 
 ## Confidence and refusal
 
-Confidence combines three interpretable retrieval signals, normalised to 0-1:
+Confidence on the summaries path combines three interpretable retrieval signals, normalised to 0-1:
 
-- **mean similarity** across the top-k retrieved chunks
-- **support**, the fraction of top-k chunks above a similarity floor
+- **mean similarity** across the top-k retrieved summaries
+- **support**, the fraction of top-k summaries above a similarity floor
 - **spread**, derived from score variance
 
-The combination is **multiplicative, not additive** ([`src/retrieval/confidence.py`](src/retrieval/confidence.py)). Mean similarity is the primary signal; support and spread are folded into a 0.5-1.0 multiplier that can penalise a strong primary signal but cannot manufacture one. Below a hard floor of `MIN_MEAN_SIM = 0.28` the score is zero regardless of the other two.
+The combination is **multiplicative, not additive** ([`src/semantic/confidence.py`](src/semantic/confidence.py)). Mean similarity is the primary signal; support and spread are folded into a 0.5-1.0 multiplier that can penalise a strong primary signal but cannot manufacture one. Below a hard floor of `MIN_MEAN_SIM = 0.28` the score is zero regardless of the other two.
 
 That shape was chosen after an additive version let a question with very low mean similarity clear the threshold on support and spread alone, which is the failure mode that matters: a question the corpus cannot answer getting waved through.
 
-Below `confidence.answer_threshold` the system returns the closest passages and an explanation instead of an answer.
+Below `semantic.answer_threshold` the system returns the closest summaries and an explanation instead of an answer. Before that, `semantic.min_similarity` drops any summary that is not close to the question at all, so an off-topic question usually arrives at the gate with nothing retrieved and is declined without a model call.
 
 Retrieval signals rather than asking the LLM to self-report, because a model cannot know that the corpus lacks an answer, only that its context window does. Retrieval statistics measure corpus-to-question fit directly and cost nothing extra.
 
-## Model Context Protocol
-
-The assistant is an MCP server ([`src/mcp/server.py`](src/mcp/server.py)), and **the chat on the web page is one of its clients**.
-
-That second half is recent. For most of this project's life the server was a separate door: an external client such as Claude Desktop could use its tools, and the chat never did, so the problem statement's "use Model Context Protocol" described an accessory rather than the system. Now [`src/mcp/client.py`](src/mcp/client.py) opens a real MCP session against the server from inside the app, runs the initialize handshake, calls a tool by name and reads the JSON it returns. It is the same request any client makes; only the transport differs, a pair of in-memory streams instead of stdin and stdout, so there is no subprocess or port per question.
-
-The chat uses it for questions with one fixed shape, detected by rules in [`src/router/tools.py`](src/router/tools.py) before the router runs. "What are the nearest ARGO floats to 10.5N 65.2E?" goes to `nearest_floats`; "show the profile of float 1900083" goes to `get_profile`. Anything carrying an extra condition, a year, a month, a measured quantity or a statistic, is left to the SQL path, which can honour it: a tool returning the right floats for the wrong year is a wrong answer delivered confidently. If the server cannot be reached the question falls through to generated SQL rather than being lost. The page shows the tool and its arguments where a generated answer shows its SQL.
-
-"Nearest floats to *this location*" needs a location a chat box does not have, so the page has a location panel. It is off unless ticked, and a question that names its own position keeps it. A nearest-floats question with no position at all is answered by asking for one rather than by guessing.
-
-```bash
-python -m src.mcp.server
-```
-
-It speaks stdio, so a client launches it rather than connecting to a port:
-
-```json
-{
-  "mcpServers": {
-    "argo": {
-      "command": "python",
-      "args": ["-m", "src.mcp.server"],
-      "cwd": "/path/to/RAG_Assistant"
-    }
-  }
-}
-```
-
-Five tools:
-
-| Tool | Arguments | Returns |
-| --- | --- | --- |
-| `query_argo` | `question` | answer, generated SQL, columns, rows |
-| `list_floats` | `region`, `year` (both optional) | float ids with profile counts and date ranges |
-| `get_profile` | `float_id`, `cycle` (optional) | one float's depth levels |
-| `nearest_floats` | `latitude`, `longitude`, `limit` (optional) | floats ranked by their closest profile, with the distance in km |
-| `describe_schema` | none | the column catalog as text |
-
-`nearest_floats` answers the problem statement's third example. Per float it keeps the single closest profile, so a float that cycled past the same spot forty times is one float near here, not forty, and it measures in metres on the sphere through PostGIS `geography` rather than in degrees, which mean different distances at different latitudes.
-
-**There is deliberately no tool that accepts SQL.** The four safety layers exist so that generated SQL is constrained before it reaches the database, and a `run_sql` tool would hand an external client a way around all of them. A test asserts that no registered tool takes a statement, under any argument name, and that every tool's schema closes `additionalProperties` so one cannot arrive under a different one.
-
-`list_floats`, `get_profile` and `nearest_floats` do not go through the model at all. Their shape is fixed, so they are parameterised queries written by hand in the server module, capped and executed as the read-only role.
+On the data path the refusal is different in kind. A lexical [scope gate](#closing-it-without-the-model) declines questions about quantities the schema does not hold before the model is called, and the validator declines SQL that reaches for a table or a join it must not.
 
 ## Evaluation
 
-Two harnesses, because the two paths fail differently.
+Three harnesses, because the three things that can go wrong fail differently: retrieval can miss, the prose can drift from what was retrieved, and the SQL can run and still answer the wrong question.
 
-**Retrieval** ([`src/evaluation/evaluator.py`](src/evaluation/evaluator.py)). Recall@K, Precision@K, Hit@K, MRR, nDCG@K against `data/evaluation/questions.csv`. Relevance is anchored at **document and page** level rather than chunk ID, because chunk IDs renumber whenever chunk size changes, which would invalidate the entire gold set every time a chunking parameter is tuned.
+**Retrieval** ([`src/evaluation/evaluator.py`](src/evaluation/evaluator.py)). Recall@K, Precision@K, Hit@K, MRR, nDCG@K against `data/evaluation/summary_questions.csv`. Relevance is anchored at the **subject** level, the float or region a summary describes, so the wording of a summary can change without invalidating the labels.
 
 #### Retrieval results
 
-25 questions written against the two manuals in the corpus, each anchored to the page that answers it. Every anchor was checked to exist in the index, so a miss is retrieval failing rather than the gold set pointing at nothing.
+26 questions about what the archive holds, 23 answerable and 3 that the summaries cannot answer. Each answerable question names the floats or regions an answer must rest on; the unanswerable three are kept for the generation scores below and left out here, where there is nothing for retrieval to find.
 
-| Metric | k=1 | k=3 | k=5 |
-| --- | --- | --- | --- |
-| **Hit@k** | 0.640 | 0.920 | **0.960** |
-| Recall@k | 0.640 | 0.920 | 0.960 |
-| Precision@k | 0.640 | 0.307 | 0.192 |
-| nDCG@k | 0.640 | 0.862 | 0.941 |
-| MRR | | | 0.788 |
+| Metric | k=4 (as configured) | k=5 |
+| --- | --- | --- |
+| **Hit@k** | **0.957** | **0.957** |
+| Recall@k | 0.819 | 0.833 |
+| Precision@k | 0.337 | 0.287 |
+| nDCG@k | 0.857 | 0.854 |
+| MRR | 0.899 | 0.899 |
 
-**The first version of this table read 0.200 at k=5, and the gap between the two is the most useful thing in this file.**
-
-The cause was the vector index. `db/002_pgvector.sql` created `ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`, a setting copied from pgvector's guidance for tens of thousands of rows. IVFFlat partitions the vectors into `lists` clusters and, at the default `ivfflat.probes = 1`, searches exactly one cluster. With 668 chunks in 100 lists that is roughly seven candidates per query.
-
-The symptom that gave it away was not the low score. It was this:
-
-```
-gold page in top-20 candidates: 5/25
-gold page in top-50 candidates: 5/25   <- identical
-gold page in top-100 candidates: 24/25
-```
-
-Asking for more candidates returned the same rows, which no honest ranking does. Switching the index to HNSW changed hit@5 from 0.160 to 0.960 with nothing else touched.
-
-Two things this cost, both worth recording:
-
-**The obvious hypothesis was wrong.** Every page of both manuals carries the same running header, so the first fix attempted was stripping repeated headers and footers during chunking. It was implemented, tested and measured, and it made retrieval *worse*: hit@5 0.840 with stripping against 0.960 without, on a fixed index. The header is useful signal, not noise, because it names the manual a chunk came from. The code was reverted. Had the index bug not been found first, that change would have shipped as an improvement on the strength of a number that rose from 0.160 for unrelated reasons.
-
-**One published metric was wrong.** `recall_at_k` summed hits over the retrieved list, so two chunks from the same relevant page counted twice and recall could exceed 1. It now counts distinct pages.
+Twenty of the twenty-three are found at rank one. Named floats are exact, because an identifier in the question is looked up rather than embedded. The one miss is "which region has the longest coverage in time", which retrieves floats rather than regions: every float summary also says when it reported, and nothing in that question names a region. The two partial hits are the multi-float questions, where the gold set names four or six floats and top-k holds only some of them, which is what recall@k below hit@k means.
 
 Reproduce from the Evaluation page of the dashboard, or:
 
-```python
-from src.evaluation.evaluator import evaluate_retrieval
-from src.utils.pipeline import RAGService
-
-report = evaluate_retrieval(RAGService().retriever, "data/evaluation/questions.csv", k=5)
+```bash
+python -m src.evaluation.evaluator --k 5
 ```
 
 **Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). The metric is **execution accuracy**: run the generated query and a hand-written reference query and compare their result sets. Whether a query parses says nothing about whether it answered the question.
@@ -766,15 +657,15 @@ Six questions had to be repaired before the set could run at all, because they w
 
 ### Scoring the prose, not just the retrieval
 
-Two of the three things worth measuring were measured. Retrieval was scored with hit@5, recall and nDCG. Text-to-SQL was scored by executing the generated query against a reference. Nothing scored the **sentence handed to the user**, which is the half the project's central claim rests on: "being confidently wrong is worse than saying nothing" is a statement about generated text, and the only evidence for it was that retrieval had found the right page.
+Retrieval finding the right float says nothing about the sentence handed to the user, which is the half the project's central claim rests on: "being confidently wrong is worse than saying nothing" is a statement about generated text.
 
 [`src/evaluation/generation_metrics.py`](src/evaluation/generation_metrics.py) scores it, in two groups.
 
 **Deterministic, no model call.** These cost nothing and cannot drift:
 
 - `answered_rate` - how often the system answers rather than declining. A system that refuses everything scores perfectly on faithfulness, so no quality number means anything without this beside it.
-- `citation_accuracy` - of the answers given, how many cite the document and page the gold set names. An answer citing the wrong page is not grounded, and no model is needed to check that.
-- `lexical_support` - the share of the answer's content words that appear in the passages it was given. A **proxy** rather than a measure, and reported as one: paraphrase scores low and fluent copying scores high. It is a floor. An answer near zero is not reading its sources.
+- `citation_accuracy` - of the answers given, how many were written from the float or region the gold set names. An answer about the Arabian Sea built from the Bay of Bengal's summary is not grounded, and no model is needed to check that.
+- `lexical_support` - the share of the answer's content words that appear in the summaries it was given. A **proxy** rather than a measure, and reported as one: paraphrase scores low and fluent copying scores high. It is a floor. An answer near zero is not reading its sources.
 
 **Judged, one model call per question, behind `--judge`:** faithfulness, answer relevance and correctness against the gold answer.
 
@@ -783,25 +674,35 @@ python -m src.evaluation.generation_metrics            # deterministic only
 python -m src.evaluation.generation_metrics --judge    # adds the graded three
 ```
 
+#### Generation results
+
+The 26 questions above through the whole summaries route, `llama3.1:8b` writing the answers, one run:
+
+| Metric | Value |
+| --- | --- |
+| Answered | 0.885 (23 of 26) |
+| Citation accuracy, of those answered | **0.957** (22 of 23) |
+| Lexical support, of those answered | 0.770 |
+
+The three declines are the interesting rows, because they are three different mechanisms doing their job:
+
+- **"What is the wind speed over the Arabian Sea?"** passed the retrieval gate at 79% confidence, because the Arabian Sea summary is close to any question naming the Arabian Sea, and was then declined by the model with `INSUFFICIENT_CONTEXT`. That is the second guard catching what the first let through.
+- **"Tell me about float 2900007"** names a float that does not exist. Nothing is found by identifier, the nearest summaries are other floats at 84% confidence, and the model declined rather than describing one of them as the float asked for.
+- **"Which region has the longest coverage in time?"** was declined at the gate with nothing retrieved. Every float summary also says when it reported, and nothing in the question names a region, so the nearest summaries were floats and below the similarity floor. A correct decline for the wrong reason: the answer was in the index and retrieval did not reach it.
+
+The one miscitation is the failure worth reading. **"Describe the drifting buoys in the Bay of Bengal"** is unanswerable, because the summaries cover Argo floats and say nothing about buoys. The model answered anyway, from the Bay of Bengal summary and three float summaries, and called the floats drifting buoys, adding a note that the term "is not used in the summaries" but the floats "are likely what is meant." That is exactly the confidently helpful answer the guards exist to prevent, and both guards let it through: retrieval scored 81% because the region is real, and the model chose to reinterpret rather than abstain. It is recorded here rather than fixed with a prompt line, because a prompt line that suppresses this sentence would be tuned to one question.
+
 The honest limit is written into the module: the judge is the same local model that wrote the answer, so it is a poor judge of its own output and shares its own blind spots. Read `citation_accuracy` first, which nothing can talk its way out of, and treat a judged score as a smoke alarm rather than a measurement. A judge that cannot be reached is recorded as unknown and left out of the mean, so an outage cannot look like a quality drop.
 
 ### What these numbers do not tell you
 
-- **One model, one prompt, one schema.** The set has never been run against a second model, so nothing here separates what this model cannot do from what no model could do with this prompt.
+- **One prompt, one schema, two models.** Nothing here separates what these models cannot do from what no model could do with this prompt.
 - **Execution accuracy has false positives.** A wrong query can collapse to the right number when the data happens to cooperate, and the comparison cannot tell that apart from understanding.
-- **The BGC sample is narrow.** Ten biogeochemical floats were loaded and none of them carries a NITRATE sensor, so that column is empty and the `bgc` bucket tests oxygen, chlorophyll, pH and backscatter only.
+- **The BGC sample is narrow.** Sixteen floats carry a biogeochemical sensor and none carries a NITRATE sensor, so that column is empty and the `bgc` bucket tests oxygen, chlorophyll, pH and backscatter only.
 - **Profile counts are shaped by the download, not by the ocean.** The sample takes a bounded number of cycles per float, so "which float reported most" is answerable but is a fact about what was fetched rather than about the fleet.
-- **The document gold set is small.** `questions.csv` is 25 questions with real ground-truth passages, but it was written by the same person who chose the corpus, which is the honest limit on what hit@5 and the generation scores show.
+- **The summary gold set is small and self-written.** 26 questions, written by the same person who wrote the summaries, against a corpus of 83 sentences. Hit@5 on that says retrieval works on this corpus; it does not say what happens with thousands of floats.
 - **The drifter bucket is new and shallow.** 14 questions is enough to show the platform is the weakest path and not enough to characterise it. It covers one year of buoys and three hull types, and no question tests the trajectory or distance queries the platform also supports.
-- **Single runs.** Every figure above except the refusal rates comes from one run, and two identical back-to-back runs disagreed on four of 46 questions. Differences smaller than about a tenth are not resolvable without `--runs N`.
-
-## Beyond retrieval
-
-Three analyses that run against the measurements table directly, included because "the model wrote some SQL" is not by itself evidence that the data supports a claim:
-
-- **Trend tests** ([`src/analytics/trend_test.py`](src/analytics/trend_test.py)): regression and Mann-Kendall on regional surface series, reporting significance rather than a slope with no error bar.
-- **Clustering** ([`src/analytics/clustering.py`](src/analytics/clustering.py)): k-means over profile features into data-driven water-mass groups, with silhouette scoring.
-- **Quantile forecasting** ([`src/analytics/forecast.py`](src/analytics/forecast.py)): LightGBM quantile regression on monthly regional means, so the output is an interval.
+- **Single runs.** Every SQL figure above except the refusal rates comes from one run, and two identical back-to-back runs disagreed on four of 46 questions. Differences smaller than about a tenth are not resolvable without `--runs N`.
 
 There is also a paired A/B harness ([`src/evaluation/ab_test.py`](src/evaluation/ab_test.py)) with a sample-size calculation, for comparing two pipeline configurations without reading noise as improvement.
 
@@ -811,39 +712,42 @@ There is also a paired A/B harness ([`src/evaluation/ab_test.py`](src/evaluation
 
 | Decision                                 | Rationale                                                                                                     |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Summaries as the retrieval corpus         | The problem statement asks for retrieval over metadata and summaries of the data, not over documents about it |
+| One table, two readers                    | The same summaries answer descriptive questions and ground the SQL generator, so there is one thing to rebuild |
+| Named floats looked up, not embedded      | Float summaries differ only by a long number, which embeddings rank worst; a question that names a float gets that float |
+| No vector index on the summaries table    | Eighty-three rows scan exactly in under a millisecond; an approximate index over so few rows loses recall for nothing |
 | Router with rules before the model        | Most questions are unambiguous. Paying for a model call on those is latency and cost for nothing               |
+| Fallback route is the summaries           | It declines when nothing is close, so an unplaced question ends in a refusal rather than in guessed SQL       |
 | Read-only role for generated SQL          | A validator bug becomes a failed query rather than a data-loss incident                                        |
 | Column check against `information_schema` | Read from the live database, not the markdown catalog, so it cannot drift away from the real tables            |
-| Summaries in their own table              | A question about a float must not retrieve a page of the manuals, and the reverse                              |
-| Context is named, never quoted            | The prompt forbids copying a number out of a summary, so every value in an answer comes from the query         |
+| Context is named, never quoted            | The SQL prompt forbids copying a number out of a summary, so every value in a data answer comes from the query |
 | SQL cache keyed on prompt version         | Re-running a demo should be fast, but a changed prompt must invalidate everything cached under the old one. The retrieved context is part of that key |
-| Chunking isolated per page                | A chunk straddling two pages makes its citation ambiguous. Per-page chunking keeps "page 42" honest            |
 | Multiplicative confidence                 | Secondary signals should modulate the primary one, never rescue it                                             |
 | Retrieval-based confidence                | LLMs are structurally uncalibrated about corpus coverage; retrieval signals measure fit directly and are free  |
-| Reranker preserves cosine scores          | The cross-encoder decides ordering only, so confidence still reads a comparable scale                          |
+| Rules that hold are code                  | The scope gate and the platform-join rule live in front of the model, after prompt wording failed three times |
 | Temperature 0                             | The task is faithful extraction, not creative writing. Also makes evaluation runs comparable                   |
-| Doc/page evaluation anchors               | Chunking parameters can be tuned without destroying the ground truth set                                       |
+| Subject-level evaluation anchors          | Summary wording can be tuned without destroying the ground truth set                                           |
 | One service facade                        | Streamlit and FastAPI share `RAGService`, so behaviour is defined once                                         |
 
 ## Why RAG rather than fine-tuning
 
-RAG keeps knowledge external and updatable: re-index instead of re-train. It makes answers attributable, so a reader can check the source. And it avoids baking sensitive documents into model weights. Fine-tuning changes style and format, not the facts a system can cite.
+RAG keeps knowledge external and updatable: re-index instead of re-train. When a new float lands, one script rebuilds its summary and the answer changes the same minute. It makes answers attributable, so a reader can check the float or region an answer rests on. Fine-tuning changes style and format, not the facts a system can cite.
 
-For the ocean data the argument is stronger still. The answer to "average surface temperature in the Arabian Sea in 2021" is a number in a table that changes as floats report. No amount of training bakes that in correctly; a query reads it.
+For the measurements the argument is stronger still. The answer to "average surface temperature in the Arabian Sea in 2021" is a number in a table that changes as floats report. No amount of training bakes that in correctly; a query reads it.
 
 ## Limitations
 
-**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Ten of those floats carry biogeochemical sensors, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Region comes from IHO basin polygons in PostGIS, with the old latitude and longitude inequalities kept as the fallback for a position inside none of the three loaded basins, which is 3% of profiles.
+**Data.** The database holds real Argo profiles: 80 floats, 1,099 profiles and 175,364 measurements from the Indian Ocean. Sixteen of those floats carry a biogeochemical sensor, which populates oxygen, chlorophyll, pH and backscatter, but none carries a NITRATE sensor, so that one column is still empty. The sample takes a bounded number of cycles per float rather than every cycle, so per-float profile counts reflect the download rather than the fleet. Region comes from IHO basin polygons in PostGIS, with the old latitude and longitude inequalities kept as the fallback for a position inside none of the three loaded basins, which is 3% of profiles.
 
 **Conversation.** A follow up is rewritten into a standalone question before routing, which keeps the router, the SQL generator and the cache stateless and keeps the cache keyed on what was actually asked. The history behind that rewrite is not persisted: the API holds it in a process-local dict, so it does not survive a restart and does not work across workers, and the Streamlit page holds it in session state, so it disappears with the browser session. Moving it to Redis or a sessions table is the fix and has not been done. A follow up whose history is lost degrades to being answered as a standalone question rather than to an error, and a rewrite that goes wrong is visible: the page shows what the question was answered as, and both versions are written to the log.
 
-**Architecture.** A question needing both sources is now answered from both, but the join between them is a sentence rather than a computation: the synthesis step is forbidden to do arithmetic, so it can report that a flag means bad data and that 812 measurements carry one, and it cannot tell you what fraction of the record that is unless the query already did. Whether a question is compound is decided by regex and, failing that, by the router model, and a compound question phrased without any of the document words reaches the data path whole. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each.
+**Architecture.** A question is answered from one route. One that needs a description and a computation, "which floats measure oxygen and how many readings do they hold", is routed to whichever half the wording favours and answered by that half alone. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each, and the exact scan that is right for 83 rows will want an index.
 
-**Retrieval and generation.** Retrieval over the manuals reaches hit@5 of 0.960 on 25 questions, but that gold set was written by the same person who chose the corpus, which is the honest limit on what it shows. One question in twenty-five is still missed at k=5. No models are trained here. Extraction quality depends on the source PDF; scanned PDFs need OCR, which is not wired in. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Embeddings are English-only, so the manual retrieval path does not benefit from the translator the way the SQL path does. Language detection is by script, so a Latin-script language other than English is taken for English unless `always_translate` is set. No individual document deletion.
+**Retrieval and generation.** Retrieval over the summaries reaches hit@5 of 0.957 on 23 questions, but that gold set was written by the same person who wrote the summaries, which is the honest limit on what it shows. A summary carries statistics computed at index time, and a question that asks for a number under a condition the summaries do not carry has to reach the SQL path through the router, which decides by wording. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Embeddings are English-only, so the summaries route relies on the translator at the edge. Language detection is by script, so a Latin-script language other than English is taken for English unless `always_translate` is set.
 
 **Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
-**Evaluation.** Text-to-SQL scores 0.567 execution accuracy over 67 questions on the shipped model and 0.483 on a second one, measured on the same questions. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 on **both** models, and worked examples, a repair attempt and a change of model have each failed to move it. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. The repair loop is worth 2 recovered queries of 6 attempts on llama and cannot touch the 21 questions that fail by returning the wrong rows without an error. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set of 52 questions written by the same person who wrote the schema, which is a real limit on what they can show. The document retrieval side has no published numbers at all.
+**Evaluation.** Text-to-SQL scores 0.567 execution accuracy over 67 questions on the shipped model and 0.483 on a second one, measured on the same questions. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 on **both** models, and worked examples, a repair attempt and a change of model have each failed to move it. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. The repair loop is worth 2 recovered queries of 6 attempts on llama and cannot touch the 21 questions that fail by returning the wrong rows without an error. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set written by the same person who wrote the schema, which is a real limit on what they can show.
 
 ## Roadmap
 
@@ -852,39 +756,34 @@ Done:
 - [x] NetCDF ingestion with `xarray`, carrying real QC flags through
 - [x] BGC-ARGO parameters in the schema, parser and catalog
 - [x] Real Argo GDAC profiles, replacing the synthetic set: 80 floats, 1,099 profiles, 175,364 measurements
-- [x] A real BGC float in the data, so the bgc questions test values rather than a shared NULL
 - [x] Float and region metadata summarised into pgvector, so semantic retrieval informs SQL generation
+- [x] The summaries as a route of their own, answering what the archive holds with the float or region cited and a confidence gate in front of the model
+- [x] Named floats looked up literally, after embeddings ranked an unrelated float within 0.002 of the one asked for
+- [x] Summaries that name their sensors, after the core QC filter silently discarded every BGC reading
+- [x] The index pruned on rebuild, after forty summaries of deleted floats were retrieved as context
 - [x] Repeat runs, so a difference can be told from noise
 - [x] Trajectory maps, depth profiles, depth-time sections and T-S diagrams
 - [x] Conversational follow-ups, by rewriting a follow up into a standalone question
-- [x] CSV, Parquet and NetCDF export, with units and the generating query attached
 - [x] PostGIS geometry on profiles, with a spatial region lookup and `ST_DWithin` distance queries
 - [x] IHO basin polygons loaded and the existing profiles backfilled, moving 128 of 1,099 into a different basin
-- [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts, regions and export with no code changed
+- [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts and regions with no code changed
 - [x] A conversational thread rather than a single question box, with each turn keeping its own chart, table and SQL
 - [x] Multilingual questions, answered in the language they were asked in, with detection that costs nothing for English
-- [x] One answer from the manuals and the database together, split in two and rejoined, with both halves shown
-- [x] An MCP server, with no tool that accepts SQL
-- [x] The chat as an MCP client: fixed-shape questions such as the floats nearest a point go to the server over the protocol, not around it
 - [x] Relative periods anchored to the archive: the SQL prompt is told where each platform's data starts and ends, read from the tables
 - [x] One trace per cast in profile plots, drawn whenever the rows are profiles rather than only when the question says "plot"
 - [x] Few-shot window-function examples, measured: they did not move the bucket
-- [x] A second model on the same 52 questions, which closed the refusal gap
-- [x] A document retrieval gold set that is not a five-row template, with numbers published
-- [x] Retrieval fixed: the IVFFlat vector index was searching one cluster of a hundred. HNSW took hit@5 from 0.160 to 0.960
-- [x] The refusal the drifters reopened, closed by a scope gate in front of the model rather than a fourth rewording: it refuses 6 of the 7 unanswerable questions and none of the answerable ones
+- [x] The refusal the drifters reopened, closed by a scope gate in front of the model rather than a fourth rewording
 - [x] ERDDAP's numeric fill value dropped at parse time, at the database and in the catalog, after 189 fixes stored `-999999` as a surface current
 - [x] The drifting buoy examples shown only to questions that could be about the buoys, so the other 51 do not carry them
-- [x] Drifter questions in the gold set, 14 answerable and one not, which found the buoy path is the weakest measured and that the buoy example causes the over-grouping it was meant to cure
+- [x] Drifter questions in the gold set, 14 answerable and one not, which found the buoy path is the weakest measured
 - [x] Generation scored, not just retrieval: citation accuracy and answer rate deterministically, faithfulness and relevance behind a judge flag
-- [x] A repair attempt on a query that failed, given the error it failed with, with refusals never repaired
+- [x] A repair attempt on a query that failed, given the error it failed with, with refusals never repaired, and a guard after the repair answered a depth question with a temperature
 - [x] Cross-platform joins rejected in the validator, including the trivial-subquery form a model found to get round the first version
 - [x] A React front end over the API, which is the second client the response contract needed
 - [x] The Docker stage, verified: both images build, the production compose comes up, and a request traverses nginx to the API to the database on real data. CI builds both images on every push and publishes them to GHCR on main
 - [x] GitHub Actions running the suite and the linter on 3.11 and 3.12
-- [x] A single run now says so in its own output, rather than leaving the caveat to a README paragraph
 - [x] Both models on the same 67 questions, which retracted an earlier claim: qwen's advantage on the window bucket was noise, and both score 0.167 there
-- [x] A repair guard, after the repair loop answered how deep the buoys dived with sea surface temperature aliased to min_pressure
+- [x] Scoped to the problem statement: the manual retrieval path, the MCP server, the file export and the combined route were removed, with their tests and dependencies
 
 Not done, honestly:
 
@@ -894,6 +793,5 @@ Not done, honestly:
 - [ ] A judge that is not the model under test, which is the honest limit of the generation scores
 - [ ] A larger model on the same 67 questions. Three prompt attempts, a repair loop and a second 7B model have all left the window bucket at 0.167, so the next honest experiment is more capacity rather than better wording
 - [ ] A cloud host. Deliberately not: the images are published and the arrangement is proven locally, and putting it on a paid instance is a decision rather than a task
-- [ ] A nitrate-carrying BGC float, since none of the ten sampled floats has that sensor
-- [ ] Hybrid search (BM25 + dense), which would likely help the exact-phrase manual questions most
-- [ ] OCR path for scanned PDFs
+- [ ] A nitrate-carrying BGC float, since none of the sixteen sampled BGC floats has that sensor
+- [ ] Coarser summaries, by project or by year, before the fleet grows past what one sentence per float can hold

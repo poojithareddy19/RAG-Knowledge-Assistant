@@ -2,9 +2,10 @@
 -- Natural-language summaries of what the measurements tables actually contain.
 --
 -- The schema catalog tells the model what columns exist. This tells it what is
--- in them: which floats, which regions, which years. Separate from doc_chunks
--- because a question about a policy document must not retrieve a float, and a
--- question about a float must not retrieve a policy document.
+-- in them: which floats, which regions, which years. It is read before SQL is
+-- generated, and it is the corpus of the summaries route, which answers
+-- questions about what the archive holds with the float or region as the
+-- citation.
 
 CREATE TABLE IF NOT EXISTS data_summaries (
     summary_id BIGSERIAL PRIMARY KEY,

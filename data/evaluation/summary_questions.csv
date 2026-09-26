@@ -1,0 +1,27 @@
+question,expected_answer,relevant_subjects
+Tell me about float 1900083,"An APEX float from Argo UK. It recorded 60 profiles from 2001-08-26 to 2003-04-28 in the Southern Indian Ocean, measuring from 3.2 to 2010.7 decibars, with a mean surface temperature of 22.85 degrees Celsius and a mean surface salinity of 35.61 PSU.",float:1900083
+Which project does float 1902367 belong to?,"Project GO-BGC. It is a SOLO_BGC_MRV platform that reported in the Bay of Bengal and Southern Indian Ocean and carries a dissolved oxygen sensor.",float:1902367
+When did float 1900162 first and last report?,From 2003-06-26 to 2005-01-13. It recorded 54 profiles in the Arabian Sea and Southern Indian Ocean.,float:1900162
+Which regions did float 1902670 report in?,The Bay of Bengal and the Southern Indian Ocean.,float:1902670
+How deep do the measurements of float 2900093 go?,"From 3.8 to 597.9 decibars of pressure, roughly that depth in metres.",float:2900093
+What sensors does float 1902458 carry?,"It is a BGC float that measures dissolved oxygen, chlorophyll, pH and particle backscatter, in addition to the core temperature and salinity.",float:1902458
+Describe the Arabian Sea data,"The Arabian Sea holds 13 floats and 205 profiles, covering 2003-03-17 to 2025-05-05, with a mean surface temperature of 28.36 degrees Celsius and a mean surface salinity of 36.02 PSU. Some of its floats measure dissolved oxygen, chlorophyll, pH and particle backscatter.",region:Arabian Sea
+What is known about the Bay of Bengal in this database?,"The Bay of Bengal holds 13 floats and 282 profiles, covering 2002-07-17 to 2026-09-17, with a mean surface temperature of 29.26 degrees Celsius and a mean surface salinity of 32.73 PSU. Some of its floats measure dissolved oxygen.",region:Bay of Bengal
+How many floats and profiles does the Southern Indian Ocean hold?,60 floats and 612 profiles.,region:Southern Indian Ocean
+Which region has the longest coverage in time?,"The Southern Indian Ocean, whose coverage runs from 2001-07-23 to 2026-09-09.",region:Southern Indian Ocean;region:Arabian Sea;region:Bay of Bengal
+Which region is the saltiest at the surface?,"The Arabian Sea, with a mean surface salinity of 36.02 PSU against 34.60 in the Southern Indian Ocean and 32.73 in the Bay of Bengal.",region:Arabian Sea;region:Bay of Bengal;region:Southern Indian Ocean
+What platform is float 1900109?,"A PROVOR platform from project GOODHOPE, which recorded one profile on 2006-01-26 in the Southern Indian Ocean.",float:1900109
+Tell me about the GO-BGC floats in the Bay of Bengal,"Floats 1902367 and 1902373, both SOLO_BGC_MRV platforms from project GO-BGC reporting from April 2025 into 2026 with dissolved oxygen sensors.",float:1902367;float:1902373
+Which floats belong to project Argo INDIA?,"Floats 1900121, 1900122, 2900226, 2900265, 2900267, 1902669 and 1902670.",float:1900121;float:1900122;float:2900226;float:2900265;float:2900267;float:1902669;float:1902670
+Is there any data from the NAVY Argo equivalent project in the Arabian Sea?,"Yes. Floats 1900432, 1900435, 1900438, 1900439, 1900440 and 1900441 are APEX floats from the NAVY Argo equivalent project that reported in the Arabian Sea between 2007 and 2009.",float:1900432;float:1900435;float:1900438;float:1900439;float:1900440;float:1900441
+What do you know about float 1902681?,"An ARVOR float from Argo Germany. It recorded 23 profiles from 2024-04-29 to 2024-11-30 in the Bay of Bengal, measuring from 2.8 to 2043.7 decibars, with a mean surface temperature of 29.92 degrees Celsius and a mean surface salinity of 32.88 PSU.",float:1902681
+Which floats measure dissolved oxygen in the Arabian Sea?,"Floats 1902457, 1902458, 1902660 and 1902751.",float:1902457;float:1902458;float:1902660;float:1902751
+Does float 1900042 carry biogeochemical sensors?,"No. It is a core APEX float from the US ARGO PROJECT that recorded 6 profiles in 2006 in the Southern Indian Ocean, and its summary names no BGC sensor.",float:1900042
+What is the mean surface temperature recorded by float 1900432?,29.63 degrees Celsius from good-quality readings.,float:1900432
+Which floats from Argo Australia are in the database?,"Floats 1901134, 1901152, 1901153, 1901158, 1901347 and 1901348.",float:1901134;float:1901152;float:1901153;float:1901158;float:1901347;float:1901348
+Which floats reported in both the Arabian Sea and the Southern Indian Ocean?,Floats 1900162 and 1900182.,float:1900162;float:1900182
+How does surface salinity in the Bay of Bengal compare with the Arabian Sea?,The Bay of Bengal is much fresher: 32.73 PSU against 36.02 PSU in the Arabian Sea.,region:Bay of Bengal;region:Arabian Sea
+How many profiles did float 2900266 record and when?,31 profiles from 2003-06-26 to 2003-11-23 in the Bay of Bengal.,float:2900266
+What is the wind speed over the Arabian Sea?,Declined. The summaries describe floats and regions and hold no wind data.,
+Describe the drifting buoys in the Bay of Bengal,Declined. The summaries cover Argo floats and regions and say nothing about drifting buoys.,
+Tell me about float 2900007,Declined. There is no float 2900007 in this database.,

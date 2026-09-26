@@ -31,19 +31,3 @@ export async function health() {
   if (!response.ok) throw new Error(`health ${response.status}`)
   return response.json()
 }
-
-export function exportUrl() {
-  return `${BASE}/export`
-}
-
-export async function exportRows(question, format, sessionId) {
-  const response = await fetch(exportUrl(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, format, session_id: sessionId }),
-  })
-
-  if (!response.ok) throw new Error(`export ${response.status}`)
-
-  return response.blob()
-}

@@ -11,12 +11,11 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
-[tool.ruff.lint.isort]
-# This repository has a src/mcp/ package and also depends on the installed
-# `mcp` library. Newer ruff infers `mcp` is first-party from the directory
-# name and splits the import block, which is both wrong and unstable across
-# ruff versions. Naming it settles the question.
-known-third-party = ["mcp"]
+[tool.ruff.lint.per-file-ignores]
+# The scripts put the repository on sys.path before importing src, so that
+# `python scripts/x.py` works from a plain checkout. That line has to come
+# before the imports, which is exactly what E402 forbids.
+"scripts/*.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from src.router.tools import with_location
 from src.utils.config import get_config
-from src.utils.export import to_csv_bytes, to_netcdf_bytes, to_parquet_bytes
 from src.utils.pipeline import RAGService
 
 st.set_page_config(
@@ -41,25 +38,25 @@ def _page_home(cfg):
     )
 
     st.markdown(
-        "Two kinds of question, one assistant. **What does this data mean?** is "
-        "answered from the Argo manuals, with the document and page behind every "
-        "claim. **What does this data say?** is answered by SQL generated against "
-        "the measurements database, shown to you before you are asked to believe "
-        "the numbers. Either way, when the evidence is too weak it declines "
-        "instead of guessing."
+        "Two kinds of question, one assistant. **What does the archive hold?** "
+        "is answered from summaries of every float and region in the database, "
+        "with the float or region behind every claim. **What does the data "
+        "say?** is answered by SQL generated against the measurements, shown to "
+        "you before you are asked to believe the numbers. Either way, when the "
+        "evidence is too weak it declines instead of guessing."
     )
 
     svc = get_service()
     stats = svc.stats()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Documents", stats["documents"])
-    c2.metric("Indexed chunks", stats["chunks"])
-    c3.metric("Embedding dim", stats["dimension"])
+    c1.metric("Summaries indexed", stats["summaries"])
+    c2.metric("Embedding model", cfg.embeddings.model_name.split("/")[-1])
+    c3.metric("Language model", cfg.generation.model)
 
     st.info(
-        "**Manual path:** question → embed → vector retrieve → confidence gate "
-        "→ grounded answer → citations.\n\n"
+        "**Summaries path:** question → embed → retrieve the nearest float and "
+        "region summaries → confidence gate → grounded answer → citations.\n\n"
         "**Data path:** question → retrieve what the database holds → generate "
         "SQL → validate → run read-only → table plus the query that made it.\n\n"
         "Configure everything in `config.yaml` / `.env`."
@@ -74,7 +71,7 @@ def _page_evaluation(cfg):
     gold_path = (
         Path(cfg.paths.processed_dir).parent
         / "evaluation"
-        / "questions.csv"
+        / "summary_questions.csv"
     )
 
     st.write(f"Gold dataset: `{gold_path}`")
@@ -83,13 +80,14 @@ def _page_evaluation(cfg):
         "k (top-k for metrics)",
         1,
         10,
-        cfg.retrieval.top_k,
+        int(cfg.semantic.top_k),
     )
 
     if st.button("Run retrieval evaluation", type="primary"):
-        if svc.stats()["chunks"] == 0:
+        if svc.stats()["summaries"] == 0:
             st.warning(
-                "Index the documents referenced by the gold set first."
+                "Build the semantic index first: "
+                "python scripts/build_semantic_index.py"
             )
             return
 
@@ -97,7 +95,7 @@ def _page_evaluation(cfg):
 
         with st.spinner("Evaluating…"):
             report = evaluate_retrieval(
-                svc.retriever,
+                svc.semantic,
                 gold_path,
                 k=k,
             )
@@ -117,9 +115,10 @@ def _page_evaluation(cfg):
         )
 
         st.caption(
-            "Generation metrics (faithfulness, groundedness, "
-            "answer relevance) are computed via the LLM-judge / "
-            "Ragas path, see docs."
+            "Retrieval only: whether the float or region the gold set names "
+            "is among the top-k summaries. The prose is scored separately by "
+            "src/evaluation/generation_metrics.py, and the SQL by "
+            "src/evaluation/sql_metrics.py."
         )
 
 
@@ -184,13 +183,13 @@ def _page_monitoring(cfg):
         )
     )
 
-    st.markdown("##### Most queried documents")
+    st.markdown("##### Most retrieved floats and regions")
 
-    if summary["most_queried_documents"]:
+    if summary["most_retrieved_subjects"]:
         st.dataframe(
             pd.DataFrame(
-                summary["most_queried_documents"],
-                columns=["Document", "Retrievals"],
+                summary["most_retrieved_subjects"],
+                columns=["Subject", "Retrievals"],
             ),
             width="stretch",
         )
@@ -207,70 +206,17 @@ def _page_settings(cfg):
     st.json(
         {
             "embedding_model": cfg.embeddings.model_name,
-            "vectorstore": cfg.vectorstore.backend,
-            "top_k": cfg.retrieval.top_k,
-            "use_reranker": cfg.retrieval.use_reranker,
-            "answer_threshold": cfg.confidence.answer_threshold,
-            "confidence_weights": dict(cfg.confidence.weights),
+            "summaries_table": cfg.semantic.table,
+            "top_k": cfg.semantic.top_k,
+            "min_similarity": cfg.semantic.min_similarity,
+            "answer_threshold": cfg.semantic.answer_threshold,
+            "confidence_weights": dict(cfg.semantic.confidence.weights),
             "provider": cfg.generation.provider,
             "model": cfg.generation.model,
+            "sql_model": cfg.sql.model,
+            "router_fallback": cfg.router.fallback,
         }
     )
-
-
-def _download_buttons(svc, result, question, position=0):
-    """Offer the result set as CSV, Parquet and NetCDF.
-
-    Three, because they answer different questions. CSV is plain ASCII text and
-    opens anywhere, with no units. Parquet keeps the types, for pandas or Spark.
-    The NetCDF carries the units, the column descriptions and the SQL that
-    produced it, so the download stays reproducible after it leaves this page.
-    """
-    # The table above shows the first hundred rows; the file is all of them.
-    full = svc.complete_result(result)
-
-    csv_column, parquet_column, netcdf_column = st.columns(3)
-
-    with csv_column:
-        st.download_button(
-            "Download CSV (ASCII)",
-            data=to_csv_bytes(full),
-            file_name="result.csv",
-            key=f"csv_{position}",
-            mime="text/csv",
-            width="stretch",
-        )
-
-    with parquet_column:
-        try:
-            parquet = to_parquet_bytes(full, title=question)
-        except Exception as exc:
-            st.caption(f"Parquet export unavailable: {exc}")
-        else:
-            st.download_button(
-                "Download Parquet",
-                data=parquet,
-                file_name="result.parquet",
-                key=f"pq_{position}",
-                mime="application/vnd.apache.parquet",
-                width="stretch",
-            )
-
-    with netcdf_column:
-        try:
-            blob = to_netcdf_bytes(full, title=question)
-        except Exception as exc:
-            st.caption(f"NetCDF export unavailable: {exc}")
-            return
-
-        st.download_button(
-            "Download NetCDF",
-            data=blob,
-            file_name="result.nc",
-            key=f"nc_{position}",
-            mime="application/x-netcdf",
-            width="stretch",
-        )
 
 
 def _remember(cfg, history, question, answer):
@@ -292,14 +238,14 @@ def _remember(cfg, history, question, answer):
 def _page_ask(cfg):
     """One question box over both sources.
 
-    This was two pages. "Ask Questions" ran the manuals alone and showed
+    This was two pages. "Ask Questions" ran the retrieval path alone and showed
     citations and a confidence score; "Ocean Data" ran the router, and when the
-    router chose the manuals it printed the answer and told the reader to go to
+    router chose retrieval it printed the answer and told the reader to go to
     the other page for the evidence. That is the routed path admitting it could
     not show its own working, and the sources were in the result all along.
 
     So the router decides, and whichever source answers shows what it rests on:
-    the document and page for a manual claim, the query for a table. Asking the
+    the float or region for a summary claim, the query for a table. Asking the
     user to pick the backend first was asking them to know the answer before
     they asked the question.
 
@@ -314,12 +260,12 @@ def _page_ask(cfg):
     st.header("💬 Ask")
 
     st.caption(
-        "One question box over the Argo manuals and the measurements database. "
-        "The question is routed; a manual answer carries its document and page, "
-        "and a data answer carries the SQL that produced it, shown before you "
-        "are asked to believe the numbers. Follow-ups work, and so do other "
-        "languages: ask in Hindi, Tamil or Bengali and the answer comes back "
-        "in the same language."
+        "One question box over the float and region summaries and the "
+        "measurements database. The question is routed; a summary answer "
+        "names the float or region it rests on, and a data answer carries the "
+        "SQL that produced it, shown before you are asked to believe the "
+        "numbers. Follow-ups work, and so do other languages: ask in Hindi, "
+        "Tamil or Bengali and the answer comes back in the same language."
     )
 
     # Two stores doing different jobs. turns is everything needed to redraw
@@ -340,19 +286,12 @@ def _page_ask(cfg):
         with st.chat_message("assistant"):
             _render_answer(svc, turn["question"], turn["result"], position)
 
-    location = _location_panel()
-
     question = st.chat_input(
         "e.g. average surface temperature per year in the Arabian Sea"
     )
 
     if not question or not question.strip():
         return
-
-    # What was typed is what the thread shows. What is sent may carry the
-    # panel's position, and that version is shown under the answer as
-    # "Answered as", so the substitution is never invisible.
-    sent = with_location(question, location)
 
     with st.chat_message("user"):
         st.write(question)
@@ -361,7 +300,7 @@ def _page_ask(cfg):
         with st.spinner("Routing, generating SQL, running query…"):
             try:
                 # A copy, because the service must not see the turn being asked.
-                result = svc.answer(sent, history=list(history))
+                result = svc.answer(question, history=list(history))
             except Exception as exc:
                 st.error(f"The query could not be completed: {exc}")
                 return
@@ -377,161 +316,14 @@ def _page_ask(cfg):
 
 
 
-def _location_panel():
-    """A position for questions that say "here", or None when switched off.
-
-    The problem statement's third example is "what are the nearest ARGO floats
-    to this location?", and a chat box has no location. This supplies one. It
-    is off unless ticked, so a question that happens to say "here" is not
-    silently pinned to a point the user set an hour ago and forgot.
-    """
-    with st.expander("📍 Location for \"near here\" questions"):
-        use = st.checkbox(
-            "Use this position when a question refers to a location",
-            key="location_use",
-        )
-
-        left, right = st.columns(2)
-
-        latitude = left.number_input(
-            "Latitude (°N, south negative)",
-            min_value=-90.0,
-            max_value=90.0,
-            value=10.0,
-            step=0.5,
-            key="location_lat",
-        )
-
-        longitude = right.number_input(
-            "Longitude (°E, west negative)",
-            min_value=-180.0,
-            max_value=180.0,
-            value=65.0,
-            step=0.5,
-            key="location_lon",
-        )
-
-    return (latitude, longitude) if use else None
-
-
-def _render_tool(svc, question, result, position):
-    """A turn answered by one of the MCP server's fixed tools."""
-    if result.get("refused"):
-        st.warning(result["answer"])
-        return
-
-    st.success(result["answer"])
-
-    rewritten = result.get("question_rewritten")
-
-    if rewritten and rewritten != question:
-        st.caption(f"Answered as: {rewritten}")
-
-    if result.get("chart_spec"):
-        st.plotly_chart(
-            result["chart_spec"],
-            width="stretch",
-            config=PLOTLY_CONFIG,
-            key=f"chart_{position}",
-        )
-
-    if result.get("rows"):
-        st.dataframe(
-            pd.DataFrame(result["rows"], columns=result["columns"]),
-            width="stretch",
-        )
-
-        _download_buttons(svc, result, question, position)
-
-    with st.expander("MCP tool call and timing"):
-        # In place of the SQL a generated answer carries. The thing to check is
-        # that the right tool ran with the right arguments, and the statement it
-        # ran is fixed in src/mcp/server.py rather than written for this turn.
-        st.code(
-            json.dumps(
-                {"tool": result.get("mcp_tool"), "arguments": result.get("mcp_arguments")},
-                indent=2,
-            ),
-            language="json",
-        )
-
-        st.write(
-            f"{result.get('row_count', 0)} rows in {result.get('elapsed_ms')} ms "
-            "end to end, over the Model Context Protocol"
-        )
-
-
-def _render_combined(svc, question, result, position):
-    """A turn answered from the manuals and the database at once.
-
-    The synthesised sentence is shown first because it is what was asked for,
-    and both halves are shown underneath because it is the one answer in the
-    system written from two sources, which makes it the one a reader most
-    needs to be able to take apart.
-    """
-    if result.get("refused"):
-        st.warning(result["answer"])
-        return
-
-    st.success(result["answer"])
-
-    if result.get("combined_by") == "stapled":
-        st.caption(
-            "Shown as two answers rather than one. The sentence joining them "
-            "could not be written, so each source appears as it came back."
-        )
-
-    parts = result.get("parts", {})
-    documents = parts.get("documents", {})
-    data = parts.get("data", {})
-
-    left, right = st.columns(2)
-
-    with left:
-        with st.expander("From the manuals", expanded=False):
-            st.caption(f"Asked as: {result.get('question_documents', '')}")
-
-            if documents.get("answered"):
-                st.write(documents.get("answer", ""))
-
-                for source in documents.get("sources", [])[:3]:
-                    st.caption(
-                        f"{source.get('doc_name', '')} "
-                        f"page {source.get('page', '')}"
-                    )
-            else:
-                st.info(
-                    "The manuals had nothing confident to add, so the answer "
-                    "rests on the data alone."
-                )
-
-    with right:
-        with st.expander("From the database", expanded=False):
-            st.caption(f"Asked as: {result.get('question_data', '')}")
-
-            if data.get("answered"):
-                st.write(data.get("answer", ""))
-                st.code(data.get("generated_sql") or "", language="sql")
-            else:
-                st.info(data.get("answer", "No rows were returned."))
-
-    if result.get("rows"):
-        st.dataframe(
-            pd.DataFrame(result["rows"], columns=result["columns"]),
-            width="stretch",
-        )
-
-        _download_buttons(svc, result, question, position)
-
-
-def _render_documents(result):
-    """A manual answer, with the evidence it rests on.
+def _render_summaries(result):
+    """A summary answer, with the evidence it rests on.
 
     This used to print the answer and send the reader to a second page for the
     citations, which was the routed path admitting it could not show its own
     working. The sources were in the result the whole time; nothing rendered
-    them. An answer from the manuals without its document and page is the thing
-    the confidence gate exists to prevent, so it is shown here.
+    them. An answer without the float or region it was written from is the
+    thing the confidence gate exists to prevent, so it is shown here.
     """
     if not result.get("answered"):
         st.warning(result["answer"])
@@ -559,43 +351,32 @@ def _render_documents(result):
             return
 
         st.markdown(
-            "**Sources**" if result.get("answered") else "**Closest passages**"
+            "**Sources**" if result.get("answered") else "**Closest summaries**"
         )
 
         for source in sources:
-            chunk = source.get("chunk", {})
-
             with st.expander(
                 f"[{source.get('rank', '?')}] "
-                f"{chunk.get('doc_name', 'source')}, "
-                f"page {chunk.get('page', '?')} · "
+                f"{source.get('kind', 'source')} "
+                f"{source.get('subject', '?')} · "
                 f"sim {float(source.get('score') or 0.0):.3f}"
             ):
-                st.write(chunk.get("text", ""))
+                st.write(source.get("text", ""))
 
 
 def _render_answer(svc, question, result, position):
     """One assistant turn: the answer and everything backing it.
 
-    ``position`` keeps the widget keys unique. Streamlit raises on two
-    download buttons sharing a key, and a conversation is many turns each
-    offering the same two downloads.
+    ``position`` keeps the widget keys unique. Streamlit raises on two charts
+    sharing a key, and a conversation is many turns each drawing its own.
     """
     st.write(
         f"**Route:** `{result['route']}` "
         f"(decided by {result['route_decided_by']})"
     )
 
-    if result["route"] == "documents":
-        _render_documents(result)
-        return
-
-    if result["route"] == "both":
-        _render_combined(svc, question, result, position)
-        return
-
-    if result["route"] == "tool":
-        _render_tool(svc, question, result, position)
+    if result["route"] == "summaries":
+        _render_summaries(result)
         return
 
     if result.get("refused"):
@@ -645,8 +426,6 @@ def _render_answer(svc, question, result, position):
             pd.DataFrame(result["rows"], columns=result["columns"]),
             width="stretch",
         )
-
-        _download_buttons(svc, result, question, position)
 
     if result.get("context_used"):
         with st.expander("What the model was told the database contains"):

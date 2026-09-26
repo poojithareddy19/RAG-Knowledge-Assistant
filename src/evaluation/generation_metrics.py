@@ -1,13 +1,13 @@
-"""Generation evaluation for the document path.
+"""Generation evaluation for the summaries route.
 
-This project measured two of the three things it needed to. Retrieval was
-scored with hit@5, recall and nDCG. Text-to-SQL was scored by executing the
-generated query against a reference. Nothing scored the **prose**: whether the
-sentence handed to a user follows from the passage it cites.
+Retrieval is scored with hit@5, recall and nDCG in ``evaluator.py``.
+Text-to-SQL is scored by executing the generated query against a reference in
+``sql_metrics.py``. This module scores the **prose**: whether the sentence
+handed to a user follows from the summaries it cites.
 
 That is the half the project's own claim rests on. "Being confidently wrong is
-worse than saying nothing" is a statement about generated text, and until now
-the only evidence for it was that retrieval found the right page.
+worse than saying nothing" is a statement about generated text, and without
+this the only evidence for it would be that retrieval found the right float.
 
 Four metrics, in two groups.
 
@@ -16,18 +16,19 @@ Four metrics, in two groups.
 - ``answered_rate`` - how often the system answers rather than declining.
   Refusing everything scores perfectly on faithfulness, so no faithfulness
   number means anything without this beside it.
-- ``citation_accuracy`` - of the answers given, how many cite the document and
-  page the gold set names. A grounded answer citing the wrong page is not
-  grounded, and this is checkable without asking a model anything.
+- ``citation_accuracy`` - of the answers given, how many were written from the
+  float or region the gold set names. An answer about the Arabian Sea built
+  from the Bay of Bengal's summary is not grounded, and this is checkable
+  without asking a model anything.
 - ``lexical_support`` - the share of the answer's content words that appear in
-  the passages it was given. A **proxy** rather than a measure: paraphrase
+  the summaries it was given. A **proxy** rather than a measure: paraphrase
   scores low and fluent copying scores high. Useful as a floor and reported as
   one, because an answer scoring near zero here is not reading its sources.
 
 **Judged, one model call per question, opt-in.** Local and slow, which is why
 it is behind a flag:
 
-- ``faithfulness`` - is every claim in the answer supported by the passages?
+- ``faithfulness`` - is every claim in the answer supported by the summaries?
 - ``answer_relevance`` - does the answer address the question asked?
 - ``correctness`` - does it agree with the gold answer?
 
@@ -45,7 +46,9 @@ import csv
 import re
 from pathlib import Path
 
-GOLD = "data/evaluation/questions.csv"
+from src.evaluation.evaluator import gold_keys, subject_key
+
+GOLD = "data/evaluation/summary_questions.csv"
 
 # Words carrying no evidence either way. Kept short on purpose: this is a
 # floor, and a longer list would flatter the score.
@@ -71,47 +74,42 @@ def load_gold(path: str | Path = GOLD) -> list[dict]:
         return list(csv.DictReader(fh))
 
 
-def _gold_pages(row: dict) -> set[tuple[str, str]]:
-    docs = [d.strip() for d in (row.get("relevant_documents") or "").split(";") if d.strip()]
-    pages = [p.strip() for p in (row.get("relevant_pages") or "").split(";") if p.strip()]
-
-    return {
-        (docs[i], pages[i] if i < len(pages) else "")
-        for i in range(len(docs))
-    }
+def _gold_subjects(row: dict) -> set[str]:
+    """The ``kind:subject`` keys a gold row says the answer must rest on."""
+    return gold_keys(row.get("relevant_subjects") or "")
 
 
-def _cited_pages(sources) -> set[tuple[str, str]]:
+def _cited_subjects(sources) -> set[str]:
+    """The subjects of the summaries an answer was written from."""
     out = set()
 
     for source in sources or []:
-        chunk = getattr(source, "chunk", None)
+        kind = getattr(source, "kind", None)
+        subject = getattr(source, "subject", None)
 
-        if chunk is None:
+        if kind is None or subject is None:
             continue
 
-        out.add((str(chunk.doc_name), str(chunk.page)))
+        out.add(subject_key(str(kind), str(subject)))
 
     return out
 
 
 def _lexical_support(answer: str, sources) -> float:
-    """Share of the answer's content words that occur in its passages."""
+    """Share of the answer's content words that occur in its summaries."""
 
     words = _content_words(answer)
 
     if not words:
         return 0.0
 
-    passage = " ".join(
-        getattr(getattr(s, "chunk", None), "text", "") or "" for s in sources or []
-    )
+    passage = " ".join(getattr(s, "text", "") or "" for s in sources or [])
 
     return len(words & _content_words(passage)) / len(words)
 
 
 JUDGE_SYSTEM = (
-    "You grade answers against the passages they were written from. You "
+    "You grade answers against the summaries they were written from. You "
     "answer with one word and nothing else."
 )
 
@@ -164,7 +162,7 @@ def evaluate_generation(
     progress=None,
     limit: int | None = None,
 ) -> dict:
-    """Score the answers the document path produces for the gold questions."""
+    """Score the answers the summaries route produces for the gold questions."""
 
     from src.utils.pipeline import RAGService
 
@@ -191,8 +189,8 @@ def evaluate_generation(
         answered = bool(getattr(answer_obj, "answered", False))
         answer = getattr(answer_obj, "answer", "") or ""
 
-        wanted = _gold_pages(row)
-        cited = _cited_pages(sources)
+        wanted = _gold_subjects(row)
+        cited = _cited_subjects(sources)
 
         record = {
             "question": question,
@@ -206,9 +204,7 @@ def evaluate_generation(
         }
 
         if judge and answered:
-            passages = "\n\n".join(
-                getattr(getattr(s, "chunk", None), "text", "") or "" for s in sources
-            )
+            passages = "\n\n".join(getattr(s, "text", "") or "" for s in sources)
 
             for aspect in _JUDGE:
                 record[aspect] = _judge(
@@ -271,7 +267,7 @@ def main(argv=None) -> int:
     from dotenv import load_dotenv
 
     parser = argparse.ArgumentParser(
-        description="Score the generated answers on the document path."
+        description="Score the generated answers on the summaries route."
     )
     parser.add_argument("--questions", default=GOLD)
     parser.add_argument("--out", default="data/evaluation/generation_results.csv")

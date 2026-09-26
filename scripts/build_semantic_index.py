@@ -6,6 +6,13 @@ Run after loading data. The summaries describe what is in the tables, so they
 are stale the moment new profiles land, and nothing rebuilds them automatically.
 """
 
+import sys
+from pathlib import Path
+
+# Run from a plain checkout. `python scripts/x.py` puts scripts/ on sys.path,
+# not the repository, so `src` is not importable without this line.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from dotenv import load_dotenv
 
 from src.semantic.index import SemanticIndex

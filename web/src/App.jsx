@@ -10,7 +10,7 @@ const SESSION = crypto.randomUUID()
 
 const EXAMPLES = [
   'What is the average surface temperature in the Arabian Sea?',
-  'What does a quality control flag of 4 mean?',
+  'Tell me about float 1901393',
   'How fast is the surface current on average in the Arabian Sea?',
   'What is the current speed at 1000 decibars?',
 ]
@@ -58,7 +58,7 @@ export default function App() {
         </p>
         {status && (
           <p className="muted status">
-            {status.documents ?? 0} documents · {status.measurements ?? 0} measurements ·
+            {status.summaries_indexed ?? 0} summaries · {status.measurements ?? 0} measurements ·
             model {status.llm_reachable === false ? 'unreachable' : 'ready'}
           </p>
         )}

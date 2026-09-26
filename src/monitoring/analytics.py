@@ -1,9 +1,9 @@
 """Analytics over the interaction log.
 
 Reads ``logs/interactions.jsonl`` and computes the aggregates the monitoring
-dashboard displays: latency, confidence distribution, fallback rate, most-queried
-documents, error counts. Returns plain dicts / a DataFrame so the UI layer stays
-free of business logic.
+dashboard displays: latency, confidence distribution, fallback rate, the floats
+and regions most often retrieved, error counts. Returns plain dicts so the UI
+layer stays free of business logic.
 """
 from __future__ import annotations
 
@@ -50,10 +50,11 @@ def summarize(records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     declined = sum(1 for r in records if not r.get("answered", False))
     errors = sum(1 for r in records if r.get("error"))
 
-    doc_counter: Counter = Counter()
+    subject_counter: Counter = Counter()
     for r in records:
         for s in r.get("retrieved", []):
-            doc_counter[s.get("doc_name", "?")] += 1
+            subject = s.get("subject") or s.get("doc_name") or "?"
+            subject_counter[f"{s.get('kind', 'source')} {subject}"] += 1
 
     avg_retrieval_score = _mean(
         [s["score"] for r in records for s in r.get("retrieved", [])]
@@ -71,7 +72,7 @@ def summarize(records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         "error_count": errors,
         "avg_retrieval_score": round(avg_retrieval_score, 4),
         "avg_answer_len_chars": round(avg_answer_len, 1),
-        "most_queried_documents": doc_counter.most_common(10),
+        "most_retrieved_subjects": subject_counter.most_common(10),
         "confidence_values": confidences,
         "latency_values": latencies,
     }

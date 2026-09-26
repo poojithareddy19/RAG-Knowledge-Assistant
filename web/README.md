@@ -2,8 +2,8 @@
 
 A React front end over the FastAPI service, for the same reason the Streamlit
 page exists: an answer you cannot check is not an answer. Every turn shows the
-route that was taken, the SQL that produced the table, and the document and
-page behind a manual claim.
+route that was taken, the SQL that produced the table, and the
+float or region behind a summary claim.
 
 ## Running
 
@@ -29,7 +29,7 @@ Point it elsewhere with `VITE_API_BASE` if the service is not local.
 ## What it is not
 
 Not a replacement for the Streamlit app. That one has the evaluation and
-monitoring pages, the ocean charts and the export buttons, and it is where the
+monitoring pages and the interactive ocean charts, and it is where the
 project is actually used. This exists because the problem statement asks for a
 React front end on the production path, and because the API contract is worth
 having a second client for: a UI written against `AskResponse` finds the places
@@ -45,8 +45,9 @@ One endpoint does the work. `POST /ask` takes
 ```
 
 and returns `AskResponse`: the answer, the route and who decided it, the
-confidence, and then whichever evidence applies. A document answer carries
-`citations`; a data answer carries `generated_sql`, `columns` and `rows`. A
+confidence, and then whichever evidence applies. A summary answer carries
+`citations`, each naming the float or region it rests on; a data answer
+carries `generated_sql`, `columns` and `rows`. A
 refusal sets `refused` with a `reason` and is rendered as a result rather than
 an error, because the system declining is the behaviour this project wants.
 
@@ -65,5 +66,5 @@ src/
     RouteBadge.jsx        which half of the system answered
     SqlBlock.jsx          the query behind the table, one click away
     ResultTable.jsx       first 100 rows, with the true count
-    Citations.jsx         document, page and similarity
+    Citations.jsx         the float or region behind a claim, with similarity
 ```

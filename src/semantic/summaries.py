@@ -15,6 +15,11 @@ any infrastructure.
 
 from __future__ import annotations
 
+# The core values are read under the core flag and each BGC parameter under
+# its own. A BGC reading is stored as its own row with no temperature on it and
+# no core flag, so filtering the join on qc_flag = 1, as this once did, threw
+# every one of them away: 49,296 oxygen readings counted as zero, and not one
+# of the sixteen floats that carry a sensor was described as carrying it.
 FLOAT_ROWS = """
 SELECT
     f.float_id,
@@ -25,25 +30,30 @@ SELECT
     max(p.obs_time)::date AS last_obs,
     array_agg(DISTINCT p.region)
         FILTER (WHERE p.region IS NOT NULL) AS regions,
-    round(min(m.pressure_dbar)::numeric, 1) AS min_pressure,
-    round(max(m.pressure_dbar)::numeric, 1) AS max_pressure,
+    round(min(m.pressure_dbar) FILTER (WHERE m.qc_flag = 1)::numeric, 1)
+        AS min_pressure,
+    round(max(m.pressure_dbar) FILTER (WHERE m.qc_flag = 1)::numeric, 1)
+        AS max_pressure,
     round(
-        avg(m.temperature_c) FILTER (WHERE m.pressure_dbar < 10)::numeric, 2
+        avg(m.temperature_c)
+            FILTER (WHERE m.pressure_dbar < 10 AND m.qc_flag = 1)::numeric, 2
     ) AS mean_surface_temp,
     round(
-        avg(m.salinity_psu) FILTER (WHERE m.pressure_dbar < 10)::numeric, 2
+        avg(m.salinity_psu)
+            FILTER (WHERE m.pressure_dbar < 10 AND m.qc_flag = 1)::numeric, 2
     ) AS mean_surface_salinity,
-    count(m.oxygen_umol_kg) AS oxygen_n,
-    count(m.chlorophyll_mg_m3) AS chlorophyll_n,
-    count(m.nitrate_umol_kg) AS nitrate_n,
-    count(m.ph_total) AS ph_n,
-    count(m.backscatter_700) AS backscatter_n
+    count(m.oxygen_umol_kg) FILTER (WHERE m.oxygen_qc = 1) AS oxygen_n,
+    count(m.chlorophyll_mg_m3) FILTER (WHERE m.chlorophyll_qc = 1)
+        AS chlorophyll_n,
+    count(m.nitrate_umol_kg) FILTER (WHERE m.nitrate_qc = 1) AS nitrate_n,
+    count(m.ph_total) FILTER (WHERE m.ph_qc = 1) AS ph_n,
+    count(m.backscatter_700) FILTER (WHERE m.backscatter_qc = 1)
+        AS backscatter_n
 FROM floats f
 JOIN profiles p
     ON p.float_id = f.float_id
 LEFT JOIN measurements m
     ON m.profile_id = p.profile_id
-   AND m.qc_flag = 1
 GROUP BY f.float_id, f.platform, f.project
 """
 
@@ -55,20 +65,23 @@ SELECT
     min(p.obs_time)::date AS first_obs,
     max(p.obs_time)::date AS last_obs,
     round(
-        avg(m.temperature_c) FILTER (WHERE m.pressure_dbar < 10)::numeric, 2
+        avg(m.temperature_c)
+            FILTER (WHERE m.pressure_dbar < 10 AND m.qc_flag = 1)::numeric, 2
     ) AS mean_surface_temp,
     round(
-        avg(m.salinity_psu) FILTER (WHERE m.pressure_dbar < 10)::numeric, 2
+        avg(m.salinity_psu)
+            FILTER (WHERE m.pressure_dbar < 10 AND m.qc_flag = 1)::numeric, 2
     ) AS mean_surface_salinity,
-    count(m.oxygen_umol_kg) AS oxygen_n,
-    count(m.chlorophyll_mg_m3) AS chlorophyll_n,
-    count(m.nitrate_umol_kg) AS nitrate_n,
-    count(m.ph_total) AS ph_n,
-    count(m.backscatter_700) AS backscatter_n
+    count(m.oxygen_umol_kg) FILTER (WHERE m.oxygen_qc = 1) AS oxygen_n,
+    count(m.chlorophyll_mg_m3) FILTER (WHERE m.chlorophyll_qc = 1)
+        AS chlorophyll_n,
+    count(m.nitrate_umol_kg) FILTER (WHERE m.nitrate_qc = 1) AS nitrate_n,
+    count(m.ph_total) FILTER (WHERE m.ph_qc = 1) AS ph_n,
+    count(m.backscatter_700) FILTER (WHERE m.backscatter_qc = 1)
+        AS backscatter_n
 FROM profiles p
 LEFT JOIN measurements m
     ON m.profile_id = p.profile_id
-   AND m.qc_flag = 1
 WHERE p.region IS NOT NULL
 GROUP BY p.region
 """

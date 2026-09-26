@@ -58,7 +58,7 @@ def _ensure_logging() -> logging.Logger:
 
 
 def log_interaction(answer: Answer) -> None:
-    """Append one structured record for a completed document query."""
+    """Append one structured record for a completed summary query."""
 
     cfg = get_config()
     logger = _ensure_logging()
@@ -73,12 +73,10 @@ def log_interaction(answer: Answer) -> None:
         "reason": answer.reason,
         "retrieved": [
             {
-                "chunk_id": source.chunk.chunk_id,
-                "doc_name": source.chunk.doc_name,
-                "page": source.chunk.page,
+                "kind": source.kind,
+                "subject": source.subject,
                 "score": round(source.score, 4),
                 "rank": source.rank,
-                "char_len": source.chunk.char_len,
             }
             for source in answer.sources
         ],

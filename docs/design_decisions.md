@@ -3,101 +3,126 @@
 This document explains *why* the system is built the way it is. In an interview
 setting these trade-offs matter more than the code itself.
 
-## RAG instead of fine-tuning
+## RAG over summaries, SQL over measurements
 
-The task is "answer strictly from these documents and cite the source."
-Fine-tuning teaches a model *style and format*; it does not give you
-**attribution**, **freshness**, or **access control**. RAG keeps the knowledge
-external: re-indexing a changed handbook is instant, every claim can be traced
-to a passage, and sensitive documents never enter model weights. Fine-tuning
-would also have to be redone on every document change and still couldn't produce
-a citation. We would only add fine-tuning to shape *how* answers are phrased,
-not *what facts* they contain.
+The archive answers two kinds of question and they fail differently. "What does
+the database hold about float 1901393" is a description, and the honest answer
+is a sentence with the float named as its source. "What is the average surface
+temperature in the Arabian Sea in 2021" is a number, and the honest answer is a
+query that a reader can run again.
 
-## Embedding model: BAAI/bge-small-en-v1.5 (default)
+So there are two paths and one router. The summaries path retrieves one-sentence
+descriptions of every float and region, embedded with pgvector, and answers from
+them with the float or region cited. The data path generates SQL, validates it,
+and runs it as a read-only role. Neither path invents the other's kind of
+answer: the summaries prompt forbids prior knowledge and the SQL prompt forbids
+copying a number out of a summary.
 
-Small (~130MB), fast on CPU, strong on the MTEB retrieval benchmarks for its
-size, and Apache-licensed. It expects an instruction prefix on the *query* side
-only, which we handle in `embedding_model.py`. The model id is a single config
-value; `all-MiniLM-L6-v2` (even smaller, no prefix) or a larger `bge-base` drop
-in without code changes. We normalize embeddings so cosine similarity reduces to
-an inner product, which lets FAISS use its fast `IndexFlatIP`.
+## Why the summaries are the retrieval corpus
 
-## Vector store: FAISS
+The problem statement asks for a vector store of metadata and summaries, which
+is a different corpus from the two Argo manuals this project once indexed. The
+manuals answered "what does a QC flag of 4 mean", which is a question about the
+format rather than about the data, and it was out of scope. The summaries answer
+"what is in here", which is the question a researcher asks first.
 
-`IndexFlatIP` gives **exact** nearest-neighbour search — no recall loss from
-approximation — which keeps evaluation honest for a corpus of realistic
-document size. FAISS stores only vectors, so chunk metadata and a per-document
-manifest are persisted alongside the index. The store exposes a deliberately
-small interface (`add / search / save / load / stats / reset`) so a Chroma
-backend could implement the same contract without touching retrieval,
-generation or the UI. For very large corpora, switching to an ANN index
-(IVF/HNSW) is a one-line change at index construction.
+They are also a better corpus for a small embedding model. Each summary is one
+subject described the way somebody would ask about it, so a hit is a whole
+answer rather than a fragment of a page, and the citation is the subject itself
+rather than a page number that shifts with every edition.
 
-## Chunking: per-page recursive, 1000/150 chars
+One consequence is worth stating: a summary carries statistics computed at index
+time, such as a mean surface temperature, and the model is told they are
+statistics of the tables rather than readings. A question that needs a number
+computed under a condition the summaries do not carry belongs to the SQL path,
+and the router's wording sends it there.
 
-We split **per page** so a chunk never straddles a page boundary — this keeps
-citations exact (a chunk is always on one page). Within a page we use a
-recursive splitter that prefers natural boundaries (paragraph → line → sentence
-→ word). Size 1000 chars (~250 tokens) balances two failure modes: chunks too
-small lose context the LLM needs; chunks too large dilute the embedding and
-retrieve loosely. 150-char overlap (~15%) prevents an answer that sits on a
-boundary from being cut in half. These are the biggest levers on retrieval
-quality and are the first thing to tune against the gold set.
+## Embedding model: BAAI/bge-small-en-v1.5
 
-## Framework use: minimal and isolated
+Small (about 130 MB), fast on CPU, strong on the MTEB retrieval benchmarks for
+its size, and Apache-licensed. It expects an instruction prefix on the *query*
+side only, which `embedding_model.py` applies. The model id is a single config
+value, so a larger `bge-base` drops in without code changes; the summaries are
+then rebuilt, because vectors from two models do not compare.
 
-The brief allows LangChain or LlamaIndex. Heavy framework use tends to obscure
-what the system actually does and breaks often across versions. We therefore use
-exactly one framework primitive — LangChain's battle-tested
-`RecursiveCharacterTextSplitter` — and confine it to `chunker.py`. Everything
-else (embedding, indexing, retrieval, prompting, provider calls) is explicit.
-This is easier to reason about, cheaper to maintain, and demonstrates
-understanding of the pipeline rather than glue skills. Swapping the splitter is
-a one-file change.
+Float summaries are near-identical sentences whose only distinguishing token is
+a long number, which is exactly what embeddings represent worst: asking for
+float 2900007 scored it 0.703 against 0.701 for an unrelated float. So an
+identifier in the question is looked up literally, at similarity 1.0, before the
+nearest-neighbour search runs. A question that names a float gets that float.
 
-## Confidence from retrieval signals, not LLM self-report
+## Vector store: pgvector, no index on the summaries table
 
-Asking an LLM "how confident are you?" produces poorly calibrated numbers — the
-model has no access to whether the corpus actually contains the answer. Instead
-we compute confidence from **retrieval** signals, which directly measure
-corpus–question fit:
+The summaries live in PostgreSQL beside the tables they describe, so one
+database holds everything and one rebuild script keeps them in step. The table
+is one row per float and per region, thousands at most, and an exact scan
+answers in under a millisecond. An approximate index here is actively harmful:
+IVFFlat with a hundred lists over a few dozen rows leaves nearly every list
+empty, and the single default probe then scans an empty one. The manual-chunk
+table this project once had lost most of its recall to exactly that
+misconfiguration, and the fix was measured at hit@5 0.160 to 0.960. The lesson
+kept is that an index is a decision about the corpus size, not a default.
 
-- **mean similarity** (weight 0.6): how close the top-k passages are to the query;
-- **support** (0.3): fraction of top-k above a similarity floor — separates one
-  lucky hit from broad corroboration;
-- **spread** (0.1): `1 - normalized variance` — a mixed pool of relevant and
-  irrelevant passages lowers confidence.
+## Confidence from retrieval signals, not model self-report
+
+Asking a model "how confident are you?" produces poorly calibrated numbers; the
+model has no access to whether the corpus contains the answer. Confidence is
+computed from **retrieval** signals instead, which measure corpus-to-question
+fit directly:
+
+- **mean similarity** (weight 0.6): how close the top-k summaries are to the
+  question;
+- **support** (0.3): the fraction of the top-k above a similarity floor, which
+  separates one lucky hit from broad corroboration;
+- **spread** (0.1): one minus the normalised variance, since a pool mixing
+  relevant and irrelevant summaries lowers confidence.
+
+The combination is multiplicative: mean similarity is the primary signal, and
+the other two are folded into a 0.5 to 1.0 multiplier that can penalise a strong
+primary signal but cannot manufacture one. Below a hard floor of 0.28 the score
+is zero regardless. An additive version once let a question with very low mean
+similarity clear the threshold on support and spread alone, which is the failure
+that matters most.
 
 Every displayed number traces back to a statistic, which is what makes the
-confidence meter *explainable*. The weights and threshold are config values and
-should be **calibrated against the gold dataset** — the default 0.45 threshold
-is a starting point, not a tuned constant.
+confidence meter explainable. The weights and threshold are config values and
+the default 0.45 threshold is a starting point rather than a tuned constant.
 
 ## Two independent hallucination guards
 
-Relying on a single guard is fragile. We use two that fail independently:
+Relying on a single guard is fragile. Two that fail independently:
 
-1. **Retrieval gate** — if confidence < threshold, decline before ever calling
-   the LLM (also saves cost/latency).
-2. **Generation self-abstention** — the prompt forces the model to emit
-   `INSUFFICIENT_CONTEXT` when the passages don't support an answer, catching
-   cases where retrieval *looked* confident but the content is off-topic.
+1. **Retrieval gate.** Below the threshold, decline before calling the model,
+   which also saves the latency of a generation.
+2. **Generation self-abstention.** The prompt forces the model to emit
+   `INSUFFICIENT_CONTEXT` when the summaries do not support an answer, which
+   catches the case where retrieval *looked* confident but the content is off
+   topic.
 
-Declining returns the closest passages plus a plain-language reason, so the user
-can judge for themselves and refine the question.
+Declining returns the closest summaries plus a plain-language reason, so the
+user can judge for themselves and refine the question.
+
+## Rules that hold are code, not prose
+
+Three attempts at prompt wording failed to stop the SQL model from aliasing the
+deepest pressure a float reached as the depth of the seabed, and from answering
+"current speed at 1000 decibars" with a surface velocity. The rule became a
+lexical scope gate that runs before the model is called, and a validator rule
+that rejects a join between the two platforms. Both are exact, cost nothing,
+and do not depend on which model is shipped. The same reasoning put the
+generated SQL behind a read-only database role: a validator bug is then a
+failed query rather than a data-loss incident.
 
 ## Provider abstraction
 
-OpenAI, Gemini and Ollama sit behind one `BaseLLM` interface returning a
-normalized `LLMResponse` (text + token usage). The rest of the system never
-branches on provider; adding one is a subclass plus a registry entry. Ollama
-support means the whole system can run **fully local** with no API key, which
-matters for sensitive internal documents.
+Ollama sits behind one `BaseLLM` interface returning a normalised `LLMResponse`
+with text and token usage. The rest of the system never branches on provider,
+so adding one is a subclass plus a registry entry. Running fully local, with no
+API key, is what lets the whole system be exercised on a laptop against the
+real archive.
 
 ## Structured JSONL logging
 
 One JSON object per line is greppable, streamable, and loads straight into
-pandas — no database required for a reference implementation. The same log feeds
-both the monitoring dashboard and offline evaluation, so operational data and
-eval data never drift apart.
+pandas without a database. The same log feeds the monitoring dashboard and
+offline evaluation, so operational data and eval data never drift apart.

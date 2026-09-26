@@ -4,17 +4,16 @@ One object that wires the whole system together so callers
 (Streamlit, FastAPI, tests) never touch individual modules.
 
 Responsibilities:
-- build the configured vector store
-- ingest files: load -> chunk -> embed -> add -> persist
-- route a question to documents, data or chart
+- route a question to summaries, data or chart
+- answer from the data summaries, with citations and a confidence gate
+- answer from the measurements database, with generated and validated SQL
 - log every interaction exactly once
 
 The service exposes two public query methods:
 
     ask(question) -> Answer
-        Documents-only path returning the typed Answer dataclass.
-        Used by the API's route_override and by callers that want the manuals
-        and nothing else.
+        Summaries-only path returning the typed Answer dataclass.
+        Used by the API's route_override and by the generation evaluation.
 
     answer(question) -> dict
         Routed path returning a uniform dictionary. Used by the Streamlit page
@@ -26,42 +25,24 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
-from pathlib import Path
 
 import httpx
 
 from src.charts.builder import render, to_frame
 from src.charts.ocean import pick_ocean_chart, render_ocean
-from src.embeddings.embedding_model import get_embedding_model
 from src.generation.answer_generator import AnswerGenerator
-from src.generation.synthesis import combine
-from src.ingestion.chunker import chunk_segments
-from src.ingestion.loader import SUPPORTED_EXTENSIONS, load_document
 from src.monitoring.logger import log_interaction, log_result
-from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
-from src.router.planner import split
 from src.router.rewriter import rewrite
-from src.router.tools import NEEDS_LOCATION, match_tool
 from src.router.translator import from_english, to_english
-from src.semantic.index import SemanticIndex, Summary, as_context
+from src.semantic.index import SemanticIndex, as_context
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
 from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.validator import SQLRejected, validate
 from src.utils.config import get_config
-from src.utils.schemas import Answer, Chunk
-
-
-def call_mcp_tool(name: str, arguments: dict) -> dict:
-    """Call the project's MCP server over the protocol. Imported late, because
-    src.mcp.server imports this module's service lazily and the two must not
-    import each other at load time."""
-    from src.mcp.client import call_tool
-
-    return call_tool(name, arguments)
+from src.utils.schemas import Answer, Summary
 
 
 def _first_line(exc: Exception) -> str:
@@ -79,66 +60,6 @@ def _hit_limit(sql: str | None, row_count: int) -> bool:
     return bool(match) and row_count >= int(match.group(1))
 
 
-def _tool_title(name: str, arguments: dict) -> str:
-    if name == "nearest_floats":
-        return (
-            f"Floats nearest {_position(arguments['latitude'], arguments['longitude'])}"
-        )
-
-    if name == "get_profile":
-        cycle = arguments.get("cycle")
-        return f"Float {arguments['float_id']}" + (f", cycle {cycle}" if cycle else "")
-
-    return name
-
-
-def _position(latitude: float, longitude: float) -> str:
-    return (
-        f"{abs(latitude):.2f}°{'N' if latitude >= 0 else 'S'} "
-        f"{abs(longitude):.2f}°{'E' if longitude >= 0 else 'W'}"
-    )
-
-
-def _tool_summary(name: str, arguments: dict, columns: list, rows: list) -> str:
-    """One sentence stating what the tool returned, with no number invented.
-
-    Every figure here is read off a returned row, so the sentence cannot say
-    anything the table beside it does not.
-    """
-    if not rows:
-        if name == "nearest_floats":
-            return (
-                "No float in this archive has a recorded position to measure "
-                f"from near {_position(arguments['latitude'], arguments['longitude'])}."
-            )
-
-        return f"The {name} tool returned no rows for those arguments."
-
-    if name == "nearest_floats":
-        first = dict(zip(columns, rows[0], strict=False))
-
-        return (
-            f"The float nearest {_position(arguments['latitude'], arguments['longitude'])} "
-            f"is {first.get('float_id')}, whose closest profile was "
-            f"{first.get('distance_km')} km away. {len(rows)} floats are listed, "
-            "nearest first."
-        )
-
-    if name == "get_profile":
-        cycles = {
-            row[columns.index("cycle_number")]
-            for row in rows
-            if "cycle_number" in columns
-        }
-
-        return (
-            f"Float {arguments['float_id']}: {len(rows)} depth levels across "
-            f"{len(cycles) or 1} profile{'s' if len(cycles) != 1 else ''}."
-        )
-
-    return f"The {name} tool returned {len(rows)} rows."
-
-
 def _repair_refusal(sql, error, column_catalog):
     """Why this failure must not be repaired, or None."""
     from src.sqlgen.scope import error_is_the_answer
@@ -151,126 +72,15 @@ def _repair_refusal(sql, error, column_catalog):
 
 
 class RAGService:
-    """Facade that orchestrates ingestion, retrieval, routing and queries."""
+    """Facade that orchestrates retrieval, routing and queries."""
 
     def __init__(self) -> None:
         self.cfg = get_config()
-        self.embedder = get_embedding_model()
-        self.store = self._build_store()
 
-        # The retriever and generator keep a reference to the store,
-        # so the store must be created before them.
-        self.retriever = Retriever(self.store)
-        self.generator = AnswerGenerator(self.retriever)
+        # One index, two jobs. The summaries route answers from it directly;
+        # the data route reads it for context before writing SQL.
         self.semantic = SemanticIndex()
-
-    def _build_store(self):
-        """Build the configured vector-store backend."""
-        backend = self.cfg.vectorstore.get(
-            "backend",
-            "faiss",
-        )
-
-        if backend == "pgvector":
-            from src.vectorstore.pgvector_store import PgVectorStore
-
-            return PgVectorStore(
-                dimension=self.cfg.vectorstore.dimension,
-                table=self.cfg.vectorstore.table,
-            )
-
-        if backend == "faiss":
-            from src.vectorstore.vectordb import FaissVectorStore
-
-            return FaissVectorStore.load(
-                dimension=self.embedder.dimension
-            )
-
-        raise ValueError(
-            f"unknown vectorstore.backend {backend!r}; "
-            "expected 'faiss' or 'pgvector'"
-        )
-
-    # ------------------------------------------------------------------
-    # Ingestion
-    # ------------------------------------------------------------------
-
-    def ingest_file(
-        self,
-        file_path: str | Path,
-        skip_duplicates: bool = True,
-    ) -> dict:
-        """Load, chunk, embed and persist one document."""
-        file_path = Path(file_path)
-        doc_name = file_path.name
-
-        if (
-            skip_duplicates
-            and self.store.contains(doc_name)
-        ):
-            return {
-                "doc_name": doc_name,
-                "status": "skipped_duplicate",
-                "chunks": 0,
-            }
-
-        segments = load_document(file_path)
-
-        chunks: list[Chunk] = chunk_segments(
-            doc_name,
-            segments,
-        )
-
-        if not chunks:
-            return {
-                "doc_name": doc_name,
-                "status": "no_text",
-                "chunks": 0,
-            }
-
-        vectors = self.embedder.embed_passages(
-            [chunk.text for chunk in chunks]
-        )
-
-        self.store.add(
-            chunks,
-            vectors,
-            embedding_model=self.embedder.model_name,
-        )
-
-        self.store.save()
-
-        # Keep a copy of the raw file for provenance.
-        raw_dir = Path(self.cfg.paths.raw_dir)
-        raw_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        try:
-            destination = raw_dir / doc_name
-
-            if file_path.resolve() != destination.resolve():
-                shutil.copy2(
-                    file_path,
-                    destination,
-                )
-        except Exception:
-            # Provenance copy should never break ingestion.
-            pass
-
-        return {
-            "doc_name": doc_name,
-            "status": "indexed",
-            "pages": max(
-                (
-                    chunk.page
-                    for chunk in chunks
-                ),
-                default=0,
-            ),
-            "chunks": len(chunks),
-        }
+        self.generator = AnswerGenerator(self.semantic)
 
     # ------------------------------------------------------------------
     # Querying
@@ -305,30 +115,14 @@ class RAGService:
         if history:
             question = rewrite(question, history)
 
-        # A question with one fixed shape goes to its MCP tool before the router
-        # sees it. None from either step means "not a tool question" or "the
-        # tool could not be reached", and both fall through to the ordinary
-        # path, so this can only add an answer and never lose one.
-        tool = match_tool(question)
-        result = self.answer_from_tool(*tool) if tool else None
+        chosen, how = pick_route(
+            question,
+            fallback=self.cfg.router.fallback,
+            use_model=self.cfg.router.enabled,
+        )
 
-        if result is not None:
-            chosen, how = "tool", "rules"
-        else:
-            chosen, how = pick_route(
-                question,
-                fallback=self.cfg.router.fallback,
-                use_model=self.cfg.router.enabled,
-            )
-
-        if result is not None:
-            pass
-        elif chosen == "documents":
-            result = self.answer_from_documents(
-                question
-            )
-        elif chosen == "both":
-            result = self.answer_from_both(
+        if chosen == "summaries":
+            result = self.answer_from_summaries(
                 question
             )
         else:
@@ -376,75 +170,11 @@ class RAGService:
 
         return result
 
-    def answer_from_tool(self, name: str, arguments: dict) -> dict | None:
-        """Answer through one of the MCP server's fixed tools, over the protocol.
-
-        Returns None when the tool cannot be reached or fails, so the caller
-        falls back to the router and the question is still answered, by
-        generated SQL, rather than lost to a tool outage.
-        """
-        if name == NEEDS_LOCATION:
-            reason = (
-                "the question asks for the floats nearest a location without "
-                "saying where. Give a position, for example \"nearest floats "
-                "to 10.5N 65.2E\", or set one in the location panel"
-            )
-
-            return {
-                "answer": f"I need a location to measure from: {reason}.",
-                "answered": False,
-                "refused": True,
-                "reason": reason,
-                "confidence": 0.0,
-                "mcp_tool": None,
-                "mcp_arguments": None,
-                "generated_sql": None,
-            }
-
-        started = time.perf_counter()
-
-        try:
-            payload = call_mcp_tool(name, arguments)
-        except Exception:
-            return None
-
-        columns = list(payload.get("columns") or [])
-        rows = [list(row) for row in (payload.get("rows") or [])]
-
-        result = {
-            "columns": columns,
-            "rows": rows,
-            "row_count": len(rows),
-        }
-
-        spec, kind = self._ocean_chart(result, _tool_title(name, arguments))
-
-        return {
-            "answer": _tool_summary(name, arguments, columns, rows),
-            "answered": bool(rows),
-            "refused": False,
-            "generated_sql": None,
-            # Which tool answered and with what, shown in place of the SQL a
-            # generated answer would carry. The claim a reader checks is then
-            # "this is the right tool with the right arguments", which is
-            # exactly as inspectable as a query and a good deal shorter.
-            "mcp_tool": name,
-            "mcp_arguments": arguments,
-            "columns": columns,
-            "rows": rows[:100],
-            "row_count": len(rows),
-            "db_elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
-            "chart_png": None,
-            "chart_kind": kind,
-            "chart_spec": spec,
-            "confidence": 1.0 if rows else 0.0,
-        }
-
-    def answer_from_documents(
+    def answer_from_summaries(
         self,
         question: str,
     ) -> dict:
-        """Answer a question using the document retrieval pipeline."""
+        """Answer a question from the data summaries, with citations."""
         answer = self.generator.answer(question)
 
         return {
@@ -488,95 +218,6 @@ class RAGService:
         ]
 
         return result
-
-    def answer_from_both(
-        self,
-        question: str,
-    ) -> dict:
-        """Answer from the manuals and the database in one reply.
-
-        The question is split first, because each backend does better on its
-        own half than on the compound question: the counting clause is noise in
-        a retrieval embedding, and the manual clause invites SQL against a
-        table that does not exist.
-
-        Both halves run whatever the other does. A half that refuses is not an
-        error here, it is one source having nothing to say, and the answer is
-        then written from the half that does. Only the case where neither half
-        answers is a refusal.
-
-        The two results travel back intact under ``parts``. The synthesised
-        sentence is a convenience laid over them, and a reader who distrusts it
-        has to be able to see exactly what each backend returned.
-        """
-        doc_question, data_question = split(question)
-
-        documents = self.answer_from_documents(doc_question)
-
-        # No chart: the combined answer is prose about a manual and a number,
-        # and a chart of the data half alone would be captioned with a question
-        # it does not answer.
-        data = self.answer_from_data(data_question, want_chart=False)
-
-        doc_text = documents["answer"] if documents.get("answered") else ""
-        data_text = data["answer"] if data.get("answered") else ""
-
-        text, how = combine(
-            question,
-            doc_text,
-            data_text,
-            data.get("columns"),
-            data.get("rows"),
-        )
-
-        answered = bool(documents.get("answered") or data.get("answered"))
-
-        if not answered:
-            text = (
-                "I could not answer this from the manuals or from the "
-                "measurements database. "
-                f"The manuals: {documents.get('answer', '')} "
-                f"The database: {data.get('answer', '')}"
-            )
-
-        return {
-            "answer": text,
-            "answered": answered,
-            "refused": not answered,
-            # As good as the weaker half, since the answer leans on both.
-            "confidence": self._combined_confidence(documents, data),
-            "combined_by": how,
-            "question_documents": doc_question,
-            "question_data": data_question,
-            "sources": documents.get("sources", []),
-            "generated_sql": data.get("generated_sql"),
-            "sql_cached": data.get("sql_cached", False),
-            "columns": data.get("columns"),
-            "rows": data.get("rows"),
-            "row_count": data.get("row_count"),
-            "db_elapsed_ms": data.get("db_elapsed_ms"),
-            "context_used": data.get("context_used", []),
-            "parts": {
-                "documents": documents,
-                "data": data,
-            },
-        }
-
-    @staticmethod
-    def _combined_confidence(documents: dict, data: dict) -> float:
-        """The lower of the two halves that actually answered.
-
-        An answer resting on a confident manual passage and an empty query is
-        not a confident answer, so the minimum is the honest number. When only
-        one half answered, that half's confidence is the whole story.
-        """
-        scores = [
-            float(part.get("confidence") or 0.0)
-            for part in (documents, data)
-            if part.get("answered")
-        ]
-
-        return min(scores) if scores else 0.0
 
     def _query_data(
         self,
@@ -739,49 +380,13 @@ class RAGService:
             "chart_png": png,
             "chart_kind": kind,
             "chart_spec": spec,
-            # For documents, confidence measures retrieval quality.
+            # For summaries, confidence measures retrieval quality.
             # For SQL, it indicates whether a validated query returned rows.
             "confidence": (
                 1.0
                 if result["row_count"]
                 else 0.0
             ),
-        }
-
-    def complete_result(self, result: dict) -> dict:
-        """The same result with every row, for callers writing a file.
-
-        ``answer_from_data`` caps ``rows`` at 100, which is right for a JSON
-        body and for a table on a page and wrong for an export: a file offered
-        as the result of a query has to be the result of that query, and one
-        holding the first hundred of five hundred rows is quietly wrong in a
-        way nobody downloading it can see.
-
-        The query is re-run rather than cached, and it goes back through the
-        validator on the way, so the export path crosses exactly the same
-        safety boundary as the original. A failure returns the truncated
-        result, because a short file beats an error page.
-        """
-        sql = result.get("generated_sql")
-
-        if not sql or not result.get("columns"):
-            return result
-
-        try:
-            out = run_query(
-                validate(
-                    sql,
-                    allowed_tables=self.cfg.sql.allowed_tables,
-                )
-            )
-        except Exception:
-            return result
-
-        return {
-            **result,
-            "columns": out["columns"],
-            "rows": out["rows"],
-            "row_count": out["row_count"],
         }
 
     def _ocean_chart(self, result, question, truncated=False):
@@ -889,7 +494,7 @@ class RAGService:
         self,
         question: str,
     ) -> Answer:
-        """Documents-only path returning the typed Answer."""
+        """Summaries-only path returning the typed Answer."""
         answer = self.generator.answer(question)
 
         try:
@@ -901,18 +506,12 @@ class RAGService:
         return answer
 
     # ------------------------------------------------------------------
-    # Knowledge base
+    # Index
     # ------------------------------------------------------------------
 
     def stats(self) -> dict:
-        """Return vector-store statistics."""
-        return self.store.stats()
-
-    def reset(self) -> None:
-        """Reset the configured vector store."""
-        self.store.reset()
-
-    @staticmethod
-    def supported_extensions() -> tuple:
-        """Return supported document extensions."""
-        return SUPPORTED_EXTENSIONS
+        """How much the semantic index currently describes."""
+        try:
+            return {"summaries": self.semantic.count()}
+        except Exception:
+            return {"summaries": 0}

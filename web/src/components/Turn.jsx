@@ -39,15 +39,6 @@ export default function Turn({ turn }) {
           )}
 
           <SqlBlock sql={result.generated_sql} />
-
-          {/* A fixed MCP tool answered instead of generated SQL. What a reader
-              checks then is the tool and its arguments, not a query. */}
-          {result.mcp_tool && (
-            <p className="muted">
-              answered by MCP tool <code>{result.mcp_tool}</code>
-              {result.mcp_arguments && ` with ${JSON.stringify(result.mcp_arguments)}`}
-            </p>
-          )}
           <ResultTable
             columns={result.columns}
             rows={result.rows}
