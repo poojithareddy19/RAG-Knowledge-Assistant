@@ -110,6 +110,12 @@ not apply the `qc_flag = 1` rule to this table.
 
 - `"surface"` means `pressure_dbar < 10`
 - `"deep"` means `pressure_dbar > 1000`
+- `"near the equator"` means `latitude BETWEEN -5 AND 5`. It is a latitude
+  band, not a region name, and no `region` value means the equator
+- A named month and year, such as "March 2023", means that whole calendar
+  month: `obs_time >= '2023-03-01' AND obs_time < '2023-04-01'`
+- "BGC parameters" means the biogeochemical columns: `oxygen_umol_kg`,
+  `chlorophyll_mg_m3`, `nitrate_umol_kg`, `ph_total`, `backscatter_700`
 - Always exclude rows with `temperature_c IS NULL` from averages
 - Join path for Argo: `measurements -> profiles -> floats`
 - Join path for buoys: `drifter_observations -> drifters`

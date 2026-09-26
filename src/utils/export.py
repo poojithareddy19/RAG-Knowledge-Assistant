@@ -57,6 +57,48 @@ def to_csv_bytes(result) -> bytes:
     return to_frame(result).to_csv(index=False).encode("utf-8")
 
 
+def to_parquet_bytes(result, title="ARGO query result") -> bytes:
+    """The result set as Parquet, with the question and units in its metadata.
+
+    The problem statement names Parquet beside SQL as a target format, and it
+    is the one of the three an analyst's pandas or Spark session reads without
+    parsing: columnar, typed, compressed. Types are kept rather than turned
+    into text, so a timestamp arrives as a timestamp and a count as an integer.
+
+    Parquet has no per-column attributes the way NetCDF does, so the units and
+    descriptions from the catalog go into the file's key-value metadata, along
+    with the question and the SQL that produced the rows. A file separated from
+    this page still says what it is and how to reproduce it.
+    """
+    import json
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    frame = _clean(to_frame(result))
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+
+    described = column_descriptions()
+
+    metadata = {
+        **(table.schema.metadata or {}),
+        b"floatchat.title": str(title).encode("utf-8"),
+        b"floatchat.columns": json.dumps(
+            {c: described.get(c, "") for c in frame.columns}
+        ).encode("utf-8"),
+    }
+
+    sql = result.get("generated_sql")
+
+    if sql:
+        metadata[b"floatchat.sql"] = str(sql).encode("utf-8")
+
+    buffer = pa.BufferOutputStream()
+    pq.write_table(table.replace_schema_metadata(metadata), buffer)
+
+    return buffer.getvalue().to_pybytes()
+
+
 def to_netcdf_bytes(result, title="ARGO query result") -> bytes:
     """Serialise a result set to NetCDF with units attached.
 

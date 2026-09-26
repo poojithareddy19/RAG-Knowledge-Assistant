@@ -85,16 +85,110 @@ def test_a_track_carrying_temperature_is_still_a_track():
 
 
 def test_a_section_is_not_mistaken_for_a_profile():
-    # Both carry pressure, so the section rule has to be tested first.
+    # Both carry pressure. A depth-time section needs more than one time: this
+    # fixture used to be a single row, and one timestamp is one cast, which is
+    # a profile. Two times keep what the test was written to pin.
     df = pd.DataFrame(
         {
-            "obs_time": pd.to_datetime(["2021-01-01"]),
-            "pressure_dbar": [10.0],
-            "salinity_psu": [35.1],
+            "obs_time": pd.to_datetime(["2021-01-01", "2021-02-01"]),
+            "pressure_dbar": [10.0, 10.0],
+            "salinity_psu": [35.1, 35.2],
         }
     )
 
     assert pick_ocean_chart(df) == "section"
+
+
+def test_a_single_time_is_a_profile_not_a_section():
+    df = pd.DataFrame(
+        {
+            "obs_time": pd.to_datetime(["2021-01-01"] * 3),
+            "pressure_dbar": [5.0, 100.0, 500.0],
+            "salinity_psu": [35.1, 35.3, 34.9],
+        }
+    )
+
+    assert pick_ocean_chart(df) == "profile"
+
+
+def test_asking_for_profiles_overlays_them_rather_than_drawing_a_section():
+    """Casts at several times are both a section and a set of profiles. The
+    question decides, and the problem statement asks for profile comparisons."""
+    df = pd.DataFrame(
+        {
+            "profile_id": [1, 1, 2, 2],
+            "obs_time": pd.to_datetime(["2023-03-01"] * 2 + ["2023-03-11"] * 2),
+            "pressure_dbar": [5.0, 500.0, 5.0, 500.0],
+            "salinity_psu": [35.1, 34.9, 35.2, 34.8],
+        }
+    )
+
+    assert pick_ocean_chart(df) == "section"
+    assert pick_ocean_chart(df, "Show me salinity profiles near the equator") == "profile"
+    assert pick_ocean_chart(df, "compare the casts") == "profile"
+
+
+def test_a_profile_that_carries_its_position_is_still_a_profile():
+    """This was drawn as a map. Nearly every profile query returns where each
+    cast was taken, and the map rule ran first, so the profile itself was never
+    shown."""
+    df = pd.DataFrame(
+        {
+            "latitude": [0.5, 0.5],
+            "longitude": [80.1, 80.1],
+            "pressure_dbar": [5.0, 500.0],
+            "salinity_psu": [35.1, 34.9],
+        }
+    )
+
+    assert pick_ocean_chart(df) == "profile"
+
+
+def test_an_identifier_is_never_plotted_as_the_measurement():
+    """profile_id is numeric and came first, so it used to be the value drawn
+    against depth."""
+    from src.charts.ocean import _value_column
+
+    df = pd.DataFrame(
+        {
+            "profile_id": [7, 7],
+            "cycle_number": [3, 3],
+            "pressure_dbar": [5.0, 500.0],
+            "salinity_psu": [35.1, 34.9],
+        }
+    )
+
+    assert _value_column(df, ("pressure_dbar",)) == "salinity_psu"
+
+
+def test_several_casts_get_one_trace_each():
+    """One line through every row sorted by pressure zigzagged between casts."""
+    df = pd.DataFrame(
+        {
+            "profile_id": [1, 1, 1, 2, 2, 2],
+            "pressure_dbar": [5.0, 100.0, 500.0, 5.0, 100.0, 500.0],
+            "salinity_psu": [35.1, 35.3, 34.9, 35.0, 35.4, 34.8],
+        }
+    )
+
+    figure = render_ocean(df, "profile")
+
+    assert len(figure.data) == 2
+    assert all(list(trace.y) == [5.0, 100.0, 500.0] for trace in figure.data)
+
+
+def test_too_many_casts_are_capped_and_the_title_says_so():
+    from src.charts.ocean import MAX_PROFILES
+
+    rows = []
+    for cast in range(MAX_PROFILES + 5):
+        for depth in (5.0, 500.0):
+            rows.append({"profile_id": cast, "pressure_dbar": depth, "salinity_psu": 35.0})
+
+    figure = render_ocean(pd.DataFrame(rows), "profile")
+
+    assert len(figure.data) == MAX_PROFILES
+    assert f"first {MAX_PROFILES} of {MAX_PROFILES + 5}" in figure.layout.title.text
 
 
 def test_pressure_alone_is_not_a_profile():
@@ -207,3 +301,49 @@ def test_a_ts_diagram_plots_points_not_lines():
 def test_an_unknown_kind_is_an_error():
     with pytest.raises(ValueError):
         render_ocean(pd.DataFrame({"a": [1]}), "spectrogram")
+
+
+def test_a_cast_cut_off_by_the_row_limit_is_not_drawn():
+    """Ordered by cast then depth, a LIMIT falls inside the last cast. Drawn, it
+    would show a float that stopped halfway down."""
+    df = pd.DataFrame(
+        {
+            "profile_id": [1, 1, 1, 2, 2, 2, 3],
+            "pressure_dbar": [5.0, 100.0, 500.0, 5.0, 100.0, 500.0, 5.0],
+            "salinity_psu": [35.1, 35.3, 34.9, 35.0, 35.4, 34.8, 35.2],
+        }
+    )
+
+    figure = render_ocean(df, "profile", truncated=True)
+
+    assert len(figure.data) == 2
+    assert "incomplete cast is not drawn" in figure.layout.title.text
+
+
+def test_a_complete_result_keeps_every_cast():
+    df = pd.DataFrame(
+        {
+            "profile_id": [1, 1, 2, 2],
+            "pressure_dbar": [5.0, 500.0, 5.0, 500.0],
+            "salinity_psu": [35.1, 34.9, 35.0, 34.8],
+        }
+    )
+
+    assert len(render_ocean(df, "profile", truncated=False).data) == 2
+
+
+def test_a_single_cast_that_filled_the_limit_is_labelled_as_possibly_short():
+    """It cannot be dropped, since it is the only one, so the title says so
+    rather than presenting half a cast as a whole one."""
+    df = pd.DataFrame(
+        {
+            "profile_id": [1, 1, 1],
+            "pressure_dbar": [5.0, 100.0, 500.0],
+            "salinity_psu": [35.1, 35.3, 34.9],
+        }
+    )
+
+    figure = render_ocean(df, "profile", truncated=True)
+
+    assert len(figure.data) == 1
+    assert "may stop short" in figure.layout.title.text

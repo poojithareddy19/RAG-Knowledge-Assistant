@@ -6,7 +6,7 @@ Two kinds of question, one system. **What does this data mean?** is answered fro
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The manual path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts, CSV and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server. Measured: [0.567 execution accuracy](#results) on 67 SQL questions across two models, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer that tells the SQL generator what the database actually holds, retrieval over the Argo Quality Control Manual and the Argo user's manual with citations and refusal, text-to-SQL with a four-layer safety path, a query router that can answer from the manuals and the database at once, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, CSV, Parquet and NetCDF export, a Streamlit dashboard, a FastAPI service, and an MCP server the chat itself calls. Measured: [0.567 execution accuracy](#results) on 67 SQL questions across two models, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.960](#retrieval-results) on 25 manual questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -112,7 +112,7 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | Text-to-SQL     | `sqlparse` validation + read-only role    |                                   |
 | Charts          | Plotly for ocean plots, matplotlib else   | PNG produced in every case        |
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |
-| Agent interface | MCP server on stdio                       | four tools, none of them raw SQL  |
+| Agent interface | MCP server on stdio, and the chat is a client | five tools, none of them raw SQL |
 | UI              | Streamlit (6 pages)                       |                                   |
 | Evaluation      | retrieval metrics + SQL execution metrics |                                   |
 | Logging         | structured JSONL                          |                                   |
@@ -148,7 +148,7 @@ RAG_Assistant/
 ├── scripts/         fetch_argo_index.py · load_argo_netcdf.py
 │                    build_semantic_index.py · load_regions.py
 │                    run_ab_test.py
-│                    mcp/            MCP server (four tools, no raw SQL)
+│                    mcp/            MCP server and the chat's client (five tools, no raw SQL)
 ├── data/            raw/ processed/ evaluation/ cache/
 └── tests/
 ```
@@ -446,7 +446,13 @@ Retrieval signals rather than asking the LLM to self-report, because a model can
 
 ## Model Context Protocol
 
-The assistant is also an MCP server ([`src/mcp/server.py`](src/mcp/server.py)), so an MCP client can query the ocean data as tools rather than through the web page or the API.
+The assistant is an MCP server ([`src/mcp/server.py`](src/mcp/server.py)), and **the chat on the web page is one of its clients**.
+
+That second half is recent. For most of this project's life the server was a separate door: an external client such as Claude Desktop could use its tools, and the chat never did, so the problem statement's "use Model Context Protocol" described an accessory rather than the system. Now [`src/mcp/client.py`](src/mcp/client.py) opens a real MCP session against the server from inside the app, runs the initialize handshake, calls a tool by name and reads the JSON it returns. It is the same request any client makes; only the transport differs, a pair of in-memory streams instead of stdin and stdout, so there is no subprocess or port per question.
+
+The chat uses it for questions with one fixed shape, detected by rules in [`src/router/tools.py`](src/router/tools.py) before the router runs. "What are the nearest ARGO floats to 10.5N 65.2E?" goes to `nearest_floats`; "show the profile of float 1900083" goes to `get_profile`. Anything carrying an extra condition, a year, a month, a measured quantity or a statistic, is left to the SQL path, which can honour it: a tool returning the right floats for the wrong year is a wrong answer delivered confidently. If the server cannot be reached the question falls through to generated SQL rather than being lost. The page shows the tool and its arguments where a generated answer shows its SQL.
+
+"Nearest floats to *this location*" needs a location a chat box does not have, so the page has a location panel. It is off unless ticked, and a question that names its own position keeps it. A nearest-floats question with no position at all is answered by asking for one rather than by guessing.
 
 ```bash
 python -m src.mcp.server
@@ -466,18 +472,21 @@ It speaks stdio, so a client launches it rather than connecting to a port:
 }
 ```
 
-Four tools:
+Five tools:
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `query_argo` | `question` | answer, generated SQL, columns, rows |
 | `list_floats` | `region`, `year` (both optional) | float ids with profile counts and date ranges |
 | `get_profile` | `float_id`, `cycle` (optional) | one float's depth levels |
+| `nearest_floats` | `latitude`, `longitude`, `limit` (optional) | floats ranked by their closest profile, with the distance in km |
 | `describe_schema` | none | the column catalog as text |
+
+`nearest_floats` answers the problem statement's third example. Per float it keeps the single closest profile, so a float that cycled past the same spot forty times is one float near here, not forty, and it measures in metres on the sphere through PostGIS `geography` rather than in degrees, which mean different distances at different latitudes.
 
 **There is deliberately no tool that accepts SQL.** The four safety layers exist so that generated SQL is constrained before it reaches the database, and a `run_sql` tool would hand an external client a way around all of them. A test asserts that no registered tool takes a statement, under any argument name, and that every tool's schema closes `additionalProperties` so one cannot arrive under a different one.
 
-`list_floats` and `get_profile` do not go through the model at all. Their shape is fixed, so they are parameterised queries written by hand in the server module, capped and executed as the read-only role.
+`list_floats`, `get_profile` and `nearest_floats` do not go through the model at all. Their shape is fixed, so they are parameterised queries written by hand in the server module, capped and executed as the read-only role.
 
 ## Evaluation
 
@@ -544,7 +553,7 @@ summaries, buckets, detail = evaluate_runs(runs=3)
 
 ### Results
 
-67 questions against **real data from both platforms**: 80 Argo floats, 1,099 profiles and 175,364 measurements from the Indian Ocean spanning 2001-07-24 to 2025-10-05, and 187 drifting buoys with 139,971 six-hourly fixes through 2023, across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading.
+67 questions against **real data from both platforms**: 80 Argo floats, 1,099 profiles and 175,364 measurements from the Indian Ocean spanning 2001-07-23 to 2026-09-17, and 187 drifting buoys with 139,971 six-hourly fixes through 2023, across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading.
 
 The set was 52 questions and entirely Argo until the `drifter` bucket was added. Every figure below is the larger set, so it is not comparable line by line with the 0.620 and 0.587 quoted elsewhere in this README, which were measured on the 52.
 
@@ -848,7 +857,7 @@ Done:
 - [x] Repeat runs, so a difference can be told from noise
 - [x] Trajectory maps, depth profiles, depth-time sections and T-S diagrams
 - [x] Conversational follow-ups, by rewriting a follow up into a standalone question
-- [x] CSV and NetCDF export, with units and the generating query attached
+- [x] CSV, Parquet and NetCDF export, with units and the generating query attached
 - [x] PostGIS geometry on profiles, with a spatial region lookup and `ST_DWithin` distance queries
 - [x] IHO basin polygons loaded and the existing profiles backfilled, moving 128 of 1,099 into a different basin
 - [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts, regions and export with no code changed
@@ -856,6 +865,9 @@ Done:
 - [x] Multilingual questions, answered in the language they were asked in, with detection that costs nothing for English
 - [x] One answer from the manuals and the database together, split in two and rejoined, with both halves shown
 - [x] An MCP server, with no tool that accepts SQL
+- [x] The chat as an MCP client: fixed-shape questions such as the floats nearest a point go to the server over the protocol, not around it
+- [x] Relative periods anchored to the archive: the SQL prompt is told where each platform's data starts and ends, read from the tables
+- [x] One trace per cast in profile plots, drawn whenever the rows are profiles rather than only when the question says "plot"
 - [x] Few-shot window-function examples, measured: they did not move the bucket
 - [x] A second model on the same 52 questions, which closed the refusal gap
 - [x] A document retrieval gold set that is not a five-row template, with numbers published
@@ -877,6 +889,8 @@ Done:
 Not done, honestly:
 
 - [ ] Persist conversation history, which currently dies with the process
+- [ ] Load the data the problem statement's own examples ask for. There are no profiles in the equatorial band in March 2023, and no BGC readings in the Arabian Sea in the last six months of the archive, so both examples return correct, empty queries
+- [ ] Rename the Southern Indian Ocean region, which is the fallback for anything outside the named basins and so includes floats north of the equator
 - [ ] A judge that is not the model under test, which is the honest limit of the generation scores
 - [ ] A larger model on the same 67 questions. Three prompt attempts, a repair loop and a second 7B model have all left the window bucket at 0.167, so the next honest experiment is more capacity rather than better wording
 - [ ] A cloud host. Deliberately not: the images are published and the arrangement is proven locally, and putting it on a paid instance is a decision rather than a task

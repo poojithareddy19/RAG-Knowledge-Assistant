@@ -19,6 +19,7 @@ from src.utils.export import (
     to_csv_bytes,
     to_dataset,
     to_netcdf_bytes,
+    to_parquet_bytes,
 )
 
 SQL = (
@@ -173,3 +174,50 @@ def test_an_empty_result_still_exports():
 
     assert to_csv_bytes(result).startswith(b"region")
     assert len(to_netcdf_bytes(result)) > 0
+
+
+# --- Parquet ----------------------------------------------------------------
+
+
+def _read_parquet(blob):
+    import io
+
+    import pyarrow.parquet as pq
+
+    return pq.read_table(io.BytesIO(blob))
+
+
+def test_parquet_round_trips_the_table():
+    table = _read_parquet(to_parquet_bytes(RESULT))
+
+    assert table.num_rows == 3
+    assert table.column_names == ["region", "temperature_c", "pressure_dbar"]
+
+
+def test_parquet_keeps_types_rather_than_turning_them_to_text():
+    """The reason to offer Parquet at all beside CSV."""
+    result = {
+        "columns": ["float_id", "obs_time", "salinity_psu"],
+        "rows": [
+            [1900083, dt.datetime(2023, 3, 1, tzinfo=dt.UTC), Decimal("35.12")],
+        ],
+    }
+
+    schema = _read_parquet(to_parquet_bytes(result)).schema
+
+    assert str(schema.field("float_id").type) == "int64"
+    assert str(schema.field("obs_time").type).startswith("timestamp")
+    # psycopg hands back Decimal; a Parquet reader wants a float.
+    assert str(schema.field("salinity_psu").type) == "double"
+
+
+def test_parquet_carries_the_question_the_sql_and_the_units():
+    """Parquet has no per-column attributes, so they travel in the file's
+    metadata: a download separated from the page still says what it is."""
+    import json
+
+    metadata = _read_parquet(to_parquet_bytes(RESULT, title="mean temperature")).schema.metadata
+
+    assert metadata[b"floatchat.title"] == b"mean temperature"
+    assert metadata[b"floatchat.sql"].decode() == SQL
+    assert json.loads(metadata[b"floatchat.columns"])["temperature_c"]

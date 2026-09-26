@@ -19,14 +19,22 @@ import pytest
 from src.mcp import server as mcp_server
 from src.mcp.server import FORBIDDEN_ARGUMENTS, TOOLS, build_server, call
 
-EXPECTED = {"query_argo", "list_floats", "get_profile", "describe_schema"}
+# Pinned, so a tool can only be added on purpose. nearest_floats joined for the
+# problem statement's third example; it takes a position, never a statement.
+EXPECTED = {
+    "query_argo",
+    "list_floats",
+    "get_profile",
+    "nearest_floats",
+    "describe_schema",
+}
 
 
 def _schema(tool):
     return tool.input_schema
 
 
-def test_exactly_the_four_tools_are_registered():
+def test_exactly_the_registered_tools_exist():
     assert {tool.name for tool in TOOLS} == EXPECTED
 
 

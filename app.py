@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+from src.router.tools import with_location
 from src.utils.config import get_config
-from src.utils.export import to_csv_bytes, to_netcdf_bytes
+from src.utils.export import to_csv_bytes, to_netcdf_bytes, to_parquet_bytes
 from src.utils.pipeline import RAGService
 
 st.set_page_config(
@@ -217,27 +219,42 @@ def _page_settings(cfg):
 
 
 def _download_buttons(svc, result, question, position=0):
-    """Offer the result set as CSV and as NetCDF.
+    """Offer the result set as CSV, Parquet and NetCDF.
 
-    Both, because they answer different questions. CSV opens anywhere and
-    carries no units; the NetCDF carries the units, the column descriptions and
-    the SQL that produced it, so the download stays reproducible after it
-    leaves this page.
+    Three, because they answer different questions. CSV is plain ASCII text and
+    opens anywhere, with no units. Parquet keeps the types, for pandas or Spark.
+    The NetCDF carries the units, the column descriptions and the SQL that
+    produced it, so the download stays reproducible after it leaves this page.
     """
     # The table above shows the first hundred rows; the file is all of them.
     full = svc.complete_result(result)
 
-    csv_column, netcdf_column = st.columns(2)
+    csv_column, parquet_column, netcdf_column = st.columns(3)
 
     with csv_column:
         st.download_button(
-            "Download CSV",
+            "Download CSV (ASCII)",
             data=to_csv_bytes(full),
             file_name="result.csv",
             key=f"csv_{position}",
             mime="text/csv",
             width="stretch",
         )
+
+    with parquet_column:
+        try:
+            parquet = to_parquet_bytes(full, title=question)
+        except Exception as exc:
+            st.caption(f"Parquet export unavailable: {exc}")
+        else:
+            st.download_button(
+                "Download Parquet",
+                data=parquet,
+                file_name="result.parquet",
+                key=f"pq_{position}",
+                mime="application/vnd.apache.parquet",
+                width="stretch",
+            )
 
     with netcdf_column:
         try:
@@ -323,12 +340,19 @@ def _page_ask(cfg):
         with st.chat_message("assistant"):
             _render_answer(svc, turn["question"], turn["result"], position)
 
+    location = _location_panel()
+
     question = st.chat_input(
         "e.g. average surface temperature per year in the Arabian Sea"
     )
 
     if not question or not question.strip():
         return
+
+    # What was typed is what the thread shows. What is sent may carry the
+    # panel's position, and that version is shown under the answer as
+    # "Answered as", so the substitution is never invisible.
+    sent = with_location(question, location)
 
     with st.chat_message("user"):
         st.write(question)
@@ -337,7 +361,7 @@ def _page_ask(cfg):
         with st.spinner("Routing, generating SQL, running query…"):
             try:
                 # A copy, because the service must not see the turn being asked.
-                result = svc.answer(question, history=list(history))
+                result = svc.answer(sent, history=list(history))
             except Exception as exc:
                 st.error(f"The query could not be completed: {exc}")
                 return
@@ -349,6 +373,92 @@ def _page_ask(cfg):
     # only thing that renders a turn, and a turn drawn once live and once on
     # the next pass was appending its text to itself in the same container.
     st.rerun()
+
+
+
+
+def _location_panel():
+    """A position for questions that say "here", or None when switched off.
+
+    The problem statement's third example is "what are the nearest ARGO floats
+    to this location?", and a chat box has no location. This supplies one. It
+    is off unless ticked, so a question that happens to say "here" is not
+    silently pinned to a point the user set an hour ago and forgot.
+    """
+    with st.expander("📍 Location for \"near here\" questions"):
+        use = st.checkbox(
+            "Use this position when a question refers to a location",
+            key="location_use",
+        )
+
+        left, right = st.columns(2)
+
+        latitude = left.number_input(
+            "Latitude (°N, south negative)",
+            min_value=-90.0,
+            max_value=90.0,
+            value=10.0,
+            step=0.5,
+            key="location_lat",
+        )
+
+        longitude = right.number_input(
+            "Longitude (°E, west negative)",
+            min_value=-180.0,
+            max_value=180.0,
+            value=65.0,
+            step=0.5,
+            key="location_lon",
+        )
+
+    return (latitude, longitude) if use else None
+
+
+def _render_tool(svc, question, result, position):
+    """A turn answered by one of the MCP server's fixed tools."""
+    if result.get("refused"):
+        st.warning(result["answer"])
+        return
+
+    st.success(result["answer"])
+
+    rewritten = result.get("question_rewritten")
+
+    if rewritten and rewritten != question:
+        st.caption(f"Answered as: {rewritten}")
+
+    if result.get("chart_spec"):
+        st.plotly_chart(
+            result["chart_spec"],
+            width="stretch",
+            config=PLOTLY_CONFIG,
+            key=f"chart_{position}",
+        )
+
+    if result.get("rows"):
+        st.dataframe(
+            pd.DataFrame(result["rows"], columns=result["columns"]),
+            width="stretch",
+        )
+
+        _download_buttons(svc, result, question, position)
+
+    with st.expander("MCP tool call and timing"):
+        # In place of the SQL a generated answer carries. The thing to check is
+        # that the right tool ran with the right arguments, and the statement it
+        # ran is fixed in src/mcp/server.py rather than written for this turn.
+        st.code(
+            json.dumps(
+                {"tool": result.get("mcp_tool"), "arguments": result.get("mcp_arguments")},
+                indent=2,
+            ),
+            language="json",
+        )
+
+        st.write(
+            f"{result.get('row_count', 0)} rows in {result.get('elapsed_ms')} ms "
+            "end to end, over the Model Context Protocol"
+        )
 
 
 def _render_combined(svc, question, result, position):
@@ -482,6 +592,10 @@ def _render_answer(svc, question, result, position):
 
     if result["route"] == "both":
         _render_combined(svc, question, result, position)
+        return
+
+    if result["route"] == "tool":
+        _render_tool(svc, question, result, position)
         return
 
     if result.get("refused"):

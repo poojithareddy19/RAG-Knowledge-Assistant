@@ -1,8 +1,12 @@
 """Expose the assistant over the Model Context Protocol, on stdio.
 
-Four tools, each a thin wrapper over something that already exists: the routed
-service for natural language, hand written parameterised queries for the two
+Five tools, each a thin wrapper over something that already exists: the routed
+service for natural language, hand written parameterised queries for the three
 lookups whose shape never varies, and the column catalog as text.
+
+The chat on the Streamlit page is a client of this server as well as external
+ones are: ``src/mcp/client.py`` calls these tools over the protocol for the
+questions that have one fixed shape, such as the floats nearest a point.
 
 **There is deliberately no tool that takes SQL.** The four safety layers, the
 validator, the read only role, the session settings and the capped LIMIT, all
@@ -57,6 +61,7 @@ FORBIDDEN_ARGUMENTS = (
 # than a slow response.
 MAX_FLOATS = 200
 MAX_LEVELS = 5000
+MAX_NEAREST = 50
 
 
 TOOLS = [
@@ -126,6 +131,39 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="nearest_floats",
+        description=(
+            "The floats that have profiled closest to a point, nearest first, "
+            "with the distance in kilometres and the position and time of each "
+            "float's closest profile."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "latitude": {
+                    "type": "number",
+                    "minimum": -90,
+                    "maximum": 90,
+                    "description": "Degrees north; south is negative.",
+                },
+                "longitude": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180,
+                    "description": "Degrees east; west is negative.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_NEAREST,
+                    "description": "How many floats to return. Defaults to 10.",
+                },
+            },
+            "required": ["latitude", "longitude"],
+            "additionalProperties": False,
+        },
+    ),
+    types.Tool(
         name="describe_schema",
         description=(
             "The column catalog as text: tables, columns, units, QC "
@@ -180,6 +218,82 @@ WHERE p.float_id = %(float_id)s
 ORDER BY p.cycle_number, m.pressure_dbar
 LIMIT %(limit)s
 """
+
+
+# The problem statement's third example, "what are the nearest ARGO floats to
+# this location", is a fixed shape: one point in, floats ranked by distance out.
+# So it is a parameterised query rather than generated SQL, for the same reason
+# as the two lookups above it: generating it would spend a model call and add a
+# failure mode to a question that one statement answers exactly.
+#
+# Per float, the single profile closest to the point, not every profile. A float
+# that has cycled past the same spot forty times is one float near here, not
+# forty. geography rather than geometry, so the distance is metres on the
+# sphere rather than degrees, which mean different things at different
+# latitudes. The GiST index on profiles.geom serves the ORDER BY.
+NEAREST_FLOATS_SQL = """
+WITH here AS (
+    SELECT ST_SetSRID(
+        ST_MakePoint(%(longitude)s, %(latitude)s), 4326
+    )::geography AS point
+),
+closest AS (
+    SELECT DISTINCT ON (p.float_id)
+        p.float_id,
+        ST_Distance(p.geom, here.point) / 1000.0 AS distance_km,
+        p.latitude,
+        p.longitude,
+        p.obs_time,
+        p.region
+    FROM profiles p
+    CROSS JOIN here
+    WHERE p.geom IS NOT NULL
+    ORDER BY p.float_id, p.geom <-> here.point
+)
+SELECT
+    float_id,
+    -- Back to float8 after rounding. round() on numeric returns a Decimal, the
+    -- tool's JSON encoder writes a Decimal as a string, and the first run
+    -- against the real archive returned '342.3': text that sorts and plots as
+    -- text.
+    round(distance_km::numeric, 1)::float8 AS distance_km,
+    latitude,
+    longitude,
+    obs_time,
+    region
+FROM closest
+ORDER BY distance_km, float_id
+LIMIT %(limit)s
+"""
+
+
+def nearest_floats(
+    latitude: float,
+    longitude: float,
+    limit: int | None = None,
+) -> dict:
+    """Floats ranked by their closest profile to a point, by hand written SQL."""
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("latitude and longitude must be numbers") from exc
+
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        raise ValueError(
+            f"({lat}, {lon}) is not a position: latitude runs -90 to 90 and "
+            "longitude -180 to 180"
+        )
+
+    count = max(1, min(int(limit or 10), MAX_NEAREST))
+
+    columns, rows = fetch_all(
+        NEAREST_FLOATS_SQL,
+        {"latitude": lat, "longitude": lon, "limit": count},
+        readonly=True,
+    )
+
+    return _table(columns, rows)
 
 
 def query_argo(question: str) -> dict:
@@ -242,6 +356,7 @@ HANDLERS = {
     "query_argo": query_argo,
     "list_floats": list_floats,
     "get_profile": get_profile,
+    "nearest_floats": nearest_floats,
     "describe_schema": describe_schema,
 }
 
@@ -310,8 +425,8 @@ def build_server() -> Server:
         version="0.2.0",
         instructions=(
             "Ocean data from ARGO floats. Ask query_argo a question in plain "
-            "English, or use list_floats and get_profile for fixed lookups. "
-            "There is no tool that accepts SQL."
+            "English, or use list_floats, get_profile and nearest_floats for "
+            "fixed lookups. There is no tool that accepts SQL."
         ),
         on_list_tools=_on_list_tools,
         on_call_tool=_on_call_tool,

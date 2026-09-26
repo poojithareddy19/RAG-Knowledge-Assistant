@@ -6,10 +6,14 @@ are shown only to questions that could plausibly be about the buoys.
 """
 
 from src.sqlgen.generator import (
+    BGC_EXAMPLE,
     DRIFTER_EXAMPLE,
+    PROFILE_EXAMPLE,
+    bgc_example_applies,
     build_prompt,
     cache_version,
     drifter_example_applies,
+    profile_example_applies,
 )
 
 MARK = "=== DRIFTING BUOY EXAMPLE ==="
@@ -72,3 +76,81 @@ def test_examples_can_still_be_turned_off_wholesale():
 
     assert MARK not in prompt
     assert DRIFTER_EXAMPLE not in prompt
+
+
+# --- vertical profiles ------------------------------------------------------
+
+PROFILE_MARK = "=== VERTICAL PROFILE EXAMPLE ==="
+
+
+def test_a_request_for_profiles_of_a_quantity_gets_the_profile_example():
+    question = "Show me salinity profiles near the equator in March 2023"
+
+    assert profile_example_applies(question)
+    assert PROFILE_MARK in build_prompt(question)
+
+
+def test_counting_profiles_is_not_asking_for_their_levels():
+    """"Profiles per year" is in the gold set and is a count. Teaching it to
+    return one row per depth level would break it."""
+    for question in (
+        "Profiles per year with a running cumulative total",
+        "How many profiles were recorded in 2003?",
+        "Number of profiles per region",
+    ):
+        assert not profile_example_applies(question), question
+        assert PROFILE_MARK not in build_prompt(question), question
+
+
+def test_the_profile_example_returns_the_cast_key_the_chart_groups_on():
+    """Without profile_id the chart can only draw one line through every cast."""
+    assert "p.profile_id" in PROFILE_EXAMPLE
+    assert "ORDER BY p.profile_id, m.pressure_dbar" in PROFILE_EXAMPLE
+
+
+# --- BGC ----------------------------------------------------------------------
+
+
+def test_naming_bgc_parameters_gets_the_bgc_example():
+    """The problem statement's second example. Told in prose what BGC meant,
+    the model compared temperature and salinity instead."""
+    question = "Compare BGC parameters in the Arabian Sea for the last 6 months"
+
+    assert bgc_example_applies(question)
+    assert "=== BGC EXAMPLE ===" in build_prompt(question)
+
+
+def test_single_bgc_parameter_questions_are_not_shown_the_group_example():
+    """The gold set's bgc bucket asks about one parameter at a time and never
+    says "BGC", so the benchmark does not move."""
+    for question in (
+        "What is the average pH of the water?",
+        "What is the average dissolved oxygen at 500 decibars?",
+    ):
+        assert not bgc_example_applies(question), question
+
+
+def test_each_bgc_parameter_is_averaged_under_its_own_qc_flag():
+    for flag in ("oxygen_qc", "chlorophyll_qc", "nitrate_qc", "ph_qc", "backscatter_qc"):
+        assert f"m.{flag} = 1" in BGC_EXAMPLE
+
+
+def _example_sql(example):
+    return example.split("SQL:", 1)[1].strip()
+
+
+def test_every_gated_example_passes_the_validator():
+    """An example the validator would reject teaches the model to write SQL
+    that is then refused."""
+    from src.sqlgen.validator import validate
+
+    tables = ["floats", "profiles", "measurements", "drifters", "drifter_observations"]
+
+    for example in (PROFILE_EXAMPLE, BGC_EXAMPLE):
+        assert validate(_example_sql(example), tables)
+
+
+def test_the_profile_example_asks_for_enough_rows_for_high_resolution_casts():
+    """A high-resolution float reports about a thousand levels a cast. At the
+    default limit of 500 one cast was cut in half and drawn as complete."""
+    assert "LIMIT 5000" in PROFILE_EXAMPLE

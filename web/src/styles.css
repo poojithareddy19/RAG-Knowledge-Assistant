@@ -45,6 +45,7 @@ h1 { margin: 0; font-size: 34px; letter-spacing: -0.5px; }
 .badge-data { color: var(--accent); border-color: var(--accent); }
 .badge-documents { color: #7c3aed; border-color: #7c3aed; }
 .badge-both { color: #be185d; border-color: #be185d; }
+.badge-tool { color: #15803d; border-color: #15803d; }
 
 /* A refusal is a result. Warm rather than red: the system declining is
    working as intended, not erroring. */

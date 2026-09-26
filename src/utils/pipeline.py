@@ -25,6 +25,7 @@ The service exposes two public query methods:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ from src.retrieval.retriever import Retriever
 from src.router.classifier import route as pick_route
 from src.router.planner import split
 from src.router.rewriter import rewrite
+from src.router.tools import NEEDS_LOCATION, match_tool
 from src.router.translator import from_english, to_english
 from src.semantic.index import SemanticIndex, Summary, as_context
 from src.sqlgen.executor import run_query
@@ -53,9 +55,88 @@ from src.utils.config import get_config
 from src.utils.schemas import Answer, Chunk
 
 
+def call_mcp_tool(name: str, arguments: dict) -> dict:
+    """Call the project's MCP server over the protocol. Imported late, because
+    src.mcp.server imports this module's service lazily and the two must not
+    import each other at load time."""
+    from src.mcp.client import call_tool
+
+    return call_tool(name, arguments)
+
+
 def _first_line(exc: Exception) -> str:
     """The readable part of an exception, without trailing detail blocks."""
     return str(exc).strip().splitlines()[0].strip()
+
+
+_LIMIT = re.compile(r"\blimit\s+(\d+)\s*$", re.I)
+
+
+def _hit_limit(sql: str | None, row_count: int) -> bool:
+    """Whether the result filled the LIMIT and so may have been cut short."""
+    match = _LIMIT.search((sql or "").strip().rstrip(";"))
+
+    return bool(match) and row_count >= int(match.group(1))
+
+
+def _tool_title(name: str, arguments: dict) -> str:
+    if name == "nearest_floats":
+        return (
+            f"Floats nearest {_position(arguments['latitude'], arguments['longitude'])}"
+        )
+
+    if name == "get_profile":
+        cycle = arguments.get("cycle")
+        return f"Float {arguments['float_id']}" + (f", cycle {cycle}" if cycle else "")
+
+    return name
+
+
+def _position(latitude: float, longitude: float) -> str:
+    return (
+        f"{abs(latitude):.2f}°{'N' if latitude >= 0 else 'S'} "
+        f"{abs(longitude):.2f}°{'E' if longitude >= 0 else 'W'}"
+    )
+
+
+def _tool_summary(name: str, arguments: dict, columns: list, rows: list) -> str:
+    """One sentence stating what the tool returned, with no number invented.
+
+    Every figure here is read off a returned row, so the sentence cannot say
+    anything the table beside it does not.
+    """
+    if not rows:
+        if name == "nearest_floats":
+            return (
+                "No float in this archive has a recorded position to measure "
+                f"from near {_position(arguments['latitude'], arguments['longitude'])}."
+            )
+
+        return f"The {name} tool returned no rows for those arguments."
+
+    if name == "nearest_floats":
+        first = dict(zip(columns, rows[0], strict=False))
+
+        return (
+            f"The float nearest {_position(arguments['latitude'], arguments['longitude'])} "
+            f"is {first.get('float_id')}, whose closest profile was "
+            f"{first.get('distance_km')} km away. {len(rows)} floats are listed, "
+            "nearest first."
+        )
+
+    if name == "get_profile":
+        cycles = {
+            row[columns.index("cycle_number")]
+            for row in rows
+            if "cycle_number" in columns
+        }
+
+        return (
+            f"Float {arguments['float_id']}: {len(rows)} depth levels across "
+            f"{len(cycles) or 1} profile{'s' if len(cycles) != 1 else ''}."
+        )
+
+    return f"The {name} tool returned {len(rows)} rows."
 
 
 def _repair_refusal(sql, error, column_catalog):
@@ -224,13 +305,25 @@ class RAGService:
         if history:
             question = rewrite(question, history)
 
-        chosen, how = pick_route(
-            question,
-            fallback=self.cfg.router.fallback,
-            use_model=self.cfg.router.enabled,
-        )
+        # A question with one fixed shape goes to its MCP tool before the router
+        # sees it. None from either step means "not a tool question" or "the
+        # tool could not be reached", and both fall through to the ordinary
+        # path, so this can only add an answer and never lose one.
+        tool = match_tool(question)
+        result = self.answer_from_tool(*tool) if tool else None
 
-        if chosen == "documents":
+        if result is not None:
+            chosen, how = "tool", "rules"
+        else:
+            chosen, how = pick_route(
+                question,
+                fallback=self.cfg.router.fallback,
+                use_model=self.cfg.router.enabled,
+            )
+
+        if result is not None:
+            pass
+        elif chosen == "documents":
             result = self.answer_from_documents(
                 question
             )
@@ -282,6 +375,70 @@ class RAGService:
             pass
 
         return result
+
+    def answer_from_tool(self, name: str, arguments: dict) -> dict | None:
+        """Answer through one of the MCP server's fixed tools, over the protocol.
+
+        Returns None when the tool cannot be reached or fails, so the caller
+        falls back to the router and the question is still answered, by
+        generated SQL, rather than lost to a tool outage.
+        """
+        if name == NEEDS_LOCATION:
+            reason = (
+                "the question asks for the floats nearest a location without "
+                "saying where. Give a position, for example \"nearest floats "
+                "to 10.5N 65.2E\", or set one in the location panel"
+            )
+
+            return {
+                "answer": f"I need a location to measure from: {reason}.",
+                "answered": False,
+                "refused": True,
+                "reason": reason,
+                "confidence": 0.0,
+                "mcp_tool": None,
+                "mcp_arguments": None,
+                "generated_sql": None,
+            }
+
+        started = time.perf_counter()
+
+        try:
+            payload = call_mcp_tool(name, arguments)
+        except Exception:
+            return None
+
+        columns = list(payload.get("columns") or [])
+        rows = [list(row) for row in (payload.get("rows") or [])]
+
+        result = {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+        }
+
+        spec, kind = self._ocean_chart(result, _tool_title(name, arguments))
+
+        return {
+            "answer": _tool_summary(name, arguments, columns, rows),
+            "answered": bool(rows),
+            "refused": False,
+            "generated_sql": None,
+            # Which tool answered and with what, shown in place of the SQL a
+            # generated answer would carry. The claim a reader checks is then
+            # "this is the right tool with the right arguments", which is
+            # exactly as inspectable as a query and a good deal shorter.
+            "mcp_tool": name,
+            "mcp_arguments": arguments,
+            "columns": columns,
+            "rows": rows[:100],
+            "row_count": len(rows),
+            "db_elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+            "chart_png": None,
+            "chart_kind": kind,
+            "chart_spec": spec,
+            "confidence": 1.0 if rows else 0.0,
+        }
 
     def answer_from_documents(
         self,
@@ -537,20 +694,32 @@ class RAGService:
 
         png = None
         kind = None
-        spec = None
+
+        # The ocean plot follows the shape of the rows, not the verb in the
+        # question. It used to be drawn only on the chart route, which the
+        # router picks for "plot", "map" or "track", so "show me salinity
+        # profiles near the equator" came back as 500 rows of casts with no
+        # profile plot at all. An ordinary aggregate matches no ocean shape and
+        # stays a table, so this changes nothing for questions that were
+        # never pictures.
+        spec, ocean_kind = self._ocean_chart(
+            result,
+            question,
+            truncated=_hit_limit(safe_sql, result["row_count"]),
+        )
+
+        if spec is not None:
+            kind = ocean_kind
 
         if want_chart:
             # The matplotlib render runs whatever the shape, because the API
             # contract promises a PNG and an image client has to keep working.
-            png, kind = render(
+            png, generic_kind = render(
                 result,
                 title=question,
             )
 
-            spec, ocean_kind = self._ocean_chart(result, question)
-
-            if spec is not None:
-                kind = ocean_kind
+            kind = kind or generic_kind
 
         return {
             "answer": self._summarise_rows(result),
@@ -615,7 +784,7 @@ class RAGService:
             "row_count": out["row_count"],
         }
 
-    def _ocean_chart(self, result, question):
+    def _ocean_chart(self, result, question, truncated=False):
         """A Plotly spec for this result when it is a known ocean shape.
 
         Returns ``(None, None)`` for anything unrecognised, so the generic
@@ -629,12 +798,12 @@ class RAGService:
             if df.empty:
                 return None, None
 
-            kind = pick_ocean_chart(df)
+            kind = pick_ocean_chart(df, question)
 
             if kind is None:
                 return None, None
 
-            figure = render_ocean(df, kind, title=question)
+            figure = render_ocean(df, kind, title=question, truncated=truncated)
 
             # Through the JSON encoder rather than to_dict, because the figure
             # holds numpy arrays and pandas timestamps that neither FastAPI nor

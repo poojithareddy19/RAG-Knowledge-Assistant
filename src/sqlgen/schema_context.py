@@ -78,3 +78,112 @@ def build_context(include_examples=True):
             )
 
     return "\n\n".join(parts)
+
+# ---------------------------------------------------------------------------
+# What period the archive covers
+# ---------------------------------------------------------------------------
+#
+# The problem statement's second example is "compare BGC parameters in the
+# Arabian Sea for the last 6 months". Nothing told the model what "now" was or
+# where the data ended, so it wrote `now() - interval '6 months'`: a window
+# that starts after the archive's last profile, which returns nothing and
+# reads as "there is no data" rather than "you asked about a period the
+# snapshot does not reach".
+#
+# This is read from the tables rather than written into the catalog, because
+# the catalog cannot know when the next load lands. It uses its own connection
+# with a two second timeout and not the shared pool, which waits thirty seconds
+# for a connection that is not coming: the prompt is built in CI, in the tests
+# and on a laptop whose database is off, and each of those must fail fast.
+
+_COVERAGE = {"text": None, "at": 0.0}
+
+COVERAGE_MAX_AGE = 600.0
+
+_COVERAGE_SQL = (
+    ("Argo profiles", "SELECT min(obs_time)::date, max(obs_time)::date FROM profiles"),
+    (
+        "Drifting buoy fixes",
+        "SELECT min(obs_time)::date, max(obs_time)::date FROM drifter_observations",
+    ),
+)
+
+
+def _read_coverage() -> list[tuple[str, object, object]]:
+    import os
+
+    import psycopg
+
+    url = os.environ.get("DATABASE__READONLY_URL") or os.environ.get("DATABASE__URL")
+
+    if not url:
+        return []
+
+    spans = []
+
+    with psycopg.connect(url, connect_timeout=2) as conn:
+        for label, sql in _COVERAGE_SQL:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    first, last = cur.fetchone()
+            except Exception:
+                conn.rollback()
+                continue
+
+            if first and last:
+                spans.append((label, first, last))
+
+    return spans
+
+
+def coverage_note(spans) -> str:
+    """The prompt text for a set of (label, first, last) spans, or empty."""
+    if not spans:
+        return ""
+
+    from dateutil.relativedelta import relativedelta
+
+    lines = [
+        f"- {label} run from {first.isoformat()} to {last.isoformat()}."
+        for label, first, last in spans
+    ]
+
+    latest_label, _, latest = max(spans, key=lambda span: span[2])
+    window_start = latest - relativedelta(months=6)
+
+    return (
+        "=== WHAT PERIOD THE DATABASE COVERS ===\n"
+        + "\n".join(lines)
+        + "\n\nThis is a snapshot, not a live feed: nothing is newer than the "
+        "dates above. A relative period in the question, such as \"the last "
+        "6 months\", \"recent\", \"this year\" or \"lately\", means relative to "
+        "the latest date of the platform being asked about, not relative to "
+        "today, and never now() or current_date. Write it with explicit date "
+        "literals so the window is visible in the query. For example, for "
+        f"{latest_label}, \"the last 6 months\" means obs_time >= "
+        f"'{window_start.isoformat()}' AND obs_time <= '{latest.isoformat()}'."
+    )
+
+
+def data_coverage() -> str:
+    """The coverage section of the SQL prompt, cached, or empty if unreadable.
+
+    A failure is cached as well, for the same ten minutes, so a process with no
+    database pays the two second timeout once rather than on every prompt.
+    """
+    import time
+
+    now = time.monotonic()
+
+    if _COVERAGE["text"] is not None and now - _COVERAGE["at"] < COVERAGE_MAX_AGE:
+        return _COVERAGE["text"]
+
+    try:
+        text = coverage_note(_read_coverage())
+    except Exception:
+        text = ""
+
+    _COVERAGE.update(text=text, at=now)
+
+    return text

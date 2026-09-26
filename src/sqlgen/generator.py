@@ -8,7 +8,7 @@ import re
 
 import httpx
 
-from src.sqlgen.schema_context import build_context
+from src.sqlgen.schema_context import build_context, data_coverage
 from src.sqlgen.scope import out_of_scope
 from src.utils import cache
 
@@ -58,7 +58,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "12"
+PROMPT_VERSION = "13"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -195,6 +195,86 @@ WHERE o.region = 'Bay of Bengal'
   AND o.northward_velocity_m_s IS NOT NULL
 """
 
+# Vertical profiles need the rows one depth level at a time, with the cast they
+# belong to. The chart draws one line per cast, keyed on profile_id, so a query
+# that returns the levels without it can only be drawn as one line through
+# every cast, which is the zigzag the chart used to produce on its own. Shown
+# only to questions about the vertical structure of a measured quantity: "how
+# many profiles per year" is a count, and must not be taught to return levels.
+PROFILE_EXAMPLE = """=== VERTICAL PROFILE EXAMPLE ===
+Question:	Show temperature profiles in the Bay of Bengal in January 2021
+SQL:
+SELECT p.profile_id,
+       p.float_id,
+       p.obs_time,
+       p.latitude,
+       p.longitude,
+       m.pressure_dbar,
+       m.temperature_c
+FROM measurements m
+JOIN profiles p ON p.profile_id = m.profile_id
+WHERE p.region = 'Bay of Bengal'
+  AND p.obs_time >= '2021-01-01'
+  AND p.obs_time < '2021-02-01'
+  AND m.temperature_qc = 1
+  AND m.temperature_c IS NOT NULL
+ORDER BY p.profile_id, m.pressure_dbar
+LIMIT 5000
+"""
+
+# The LIMIT above is the validator's ceiling, not a round number. Without it
+# the validator's default of 500 applies, and a high-resolution float reports
+# about a thousand levels a cast: on the first real run, "salinity profiles
+# near the equator in January 2026" returned half of one cast, which was drawn
+# as a complete profile that stopped at mid-depth.
+
+# "Compare BGC parameters" is the problem statement's own second example, and
+# the catalog saying what BGC means was read and overridden: the model compared
+# temperature and salinity. One worked query did what the sentence could not,
+# as it has every other time in this file. Each parameter is averaged under its
+# own QC flag, because qc_flag summarises the core parameters and says nothing
+# about a biogeochemical one. Shown only when the question names BGC.
+BGC_EXAMPLE = """=== BGC EXAMPLE ===
+Question:	Compare BGC parameters in the Bay of Bengal by month in 2020
+SQL:
+SELECT date_trunc('month', p.obs_time) AS month,
+       avg(m.oxygen_umol_kg) FILTER (WHERE m.oxygen_qc = 1) AS mean_oxygen_umol_kg,
+       avg(m.chlorophyll_mg_m3) FILTER (WHERE m.chlorophyll_qc = 1) AS mean_chlorophyll_mg_m3,
+       avg(m.nitrate_umol_kg) FILTER (WHERE m.nitrate_qc = 1) AS mean_nitrate_umol_kg,
+       avg(m.ph_total) FILTER (WHERE m.ph_qc = 1) AS mean_ph_total,
+       avg(m.backscatter_700) FILTER (WHERE m.backscatter_qc = 1) AS mean_backscatter_700
+FROM measurements m
+JOIN profiles p ON p.profile_id = m.profile_id
+WHERE p.region = 'Bay of Bengal'
+  AND p.obs_time >= '2020-01-01'
+  AND p.obs_time < '2021-01-01'
+GROUP BY month
+ORDER BY month
+"""
+
+_BGC_TOPIC = re.compile(r"\b(bgc|biogeochemi\w*)\b", re.I)
+
+
+def bgc_example_applies(question: str) -> bool:
+    """Whether the question names BGC parameters as a group."""
+
+    return bool(_BGC_TOPIC.search(question or ""))
+
+
+_PROFILE_TOPIC = re.compile(
+    r"\b(salinity|temperature|temp|oxygen|chlorophyll|nitrate|ph|bgc|density"
+    r"|vertical|depth)\s+profiles?\b"
+    r"|\bprofiles?\s+of\s+(salinity|temperature|oxygen|chlorophyll|nitrate)\b",
+    re.I,
+)
+
+
+def profile_example_applies(question: str) -> bool:
+    """Whether this question asks for the vertical structure of a quantity."""
+
+    return bool(_PROFILE_TOPIC.search(question or ""))
+
+
 FENCE = re.compile(
     r"```(?:sql)?(.*?)```",
     re.S | re.I,
@@ -240,6 +320,13 @@ def build_prompt(
         f"=== SCHEMA ===\n{build_context(include_examples)}",
     ]
 
+    # Where the archive starts and ends, so a relative period in the question
+    # is anchored to the data rather than to a clock the snapshot never reached.
+    coverage = data_coverage()
+
+    if coverage:
+        sections.append(coverage)
+
     if include_examples:
         sections.append(TRACK_EXAMPLE)
         sections.append(WINDOW_EXAMPLES)
@@ -251,6 +338,12 @@ def build_prompt(
         # is answering from the wrong platform entirely.
         if drifter_example_applies(question):
             sections.append(DRIFTER_EXAMPLE)
+
+        if profile_example_applies(question):
+            sections.append(PROFILE_EXAMPLE)
+
+        if bgc_example_applies(question):
+            sections.append(BGC_EXAMPLE)
 
     if context.strip():
         sections.append(
@@ -335,7 +428,11 @@ def cache_version(
     digest = hashlib.sha256(
         (
             build_prompt("", context, include_examples)
-            + (DRIFTER_EXAMPLE if include_examples else "")
+            + (
+                DRIFTER_EXAMPLE + PROFILE_EXAMPLE + BGC_EXAMPLE
+                if include_examples
+                else ""
+            )
         ).encode()
     ).hexdigest()[:12]
 

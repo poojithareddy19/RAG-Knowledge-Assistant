@@ -29,7 +29,7 @@ class AskRequest(BaseModel):
 class ExportRequest(AskRequest):
     """Request body for /export: an /ask question plus the file format."""
 
-    format: Literal["csv", "netcdf"] = "csv"
+    format: Literal["csv", "parquet", "netcdf"] = "csv"
 
 
 class AskResponse(BaseModel):
@@ -50,6 +50,11 @@ class AskResponse(BaseModel):
     # what the model first produced, which a client comparing it against
     # the question should be able to see.
     sql_repaired: bool | None = None
+    # Set when a fixed MCP tool answered instead of generated SQL, for example
+    # the floats nearest a point. generated_sql is then None, and these say
+    # which tool ran with what, which is the thing a reader checks instead.
+    mcp_tool: str | None = None
+    mcp_arguments: dict[str, Any] | None = None
     columns: list[str] | None = None
     rows: list[list[Any]] | None = None
     row_count: int | None = None

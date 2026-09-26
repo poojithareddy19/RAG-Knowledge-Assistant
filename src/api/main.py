@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from src.api.schemas import AskRequest, AskResponse, ExportRequest, HealthResponse
 from src.utils.config import get_config
 from src.utils.db import fetch_all
-from src.utils.export import to_csv_bytes, to_netcdf_bytes
+from src.utils.export import to_csv_bytes, to_netcdf_bytes, to_parquet_bytes
 from src.utils.pipeline import RAGService
 
 load_dotenv()
@@ -147,6 +147,10 @@ def export(req: ExportRequest) -> StreamingResponse:
         blob = to_csv_bytes(result)
         media = "text/csv"
         name = "result.csv"
+    elif req.format == "parquet":
+        blob = to_parquet_bytes(result, title=req.question)
+        media = "application/vnd.apache.parquet"
+        name = "result.parquet"
     else:
         blob = to_netcdf_bytes(result, title=req.question)
         media = "application/x-netcdf"

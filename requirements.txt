@@ -2,8 +2,11 @@
 # 1.52 is the floor because the UI passes width="stretch" rather than the
 # deprecated use_container_width, and the width API landed across 1.50 to 1.52.
 streamlit>=1.52,<2.0
-pandas>=2.0,<3.0
-numpy>=1.24,<3.0
+# <4.0, not <3.0: the suite runs green on pandas 3, which is what a fresh
+# install resolves to and what the development venv already had while this
+# file still claimed otherwise.
+pandas>=2.2,<4.0
+numpy>=1.26,<3.0
 pyyaml>=6.0
 python-dotenv>=1.0
 
@@ -33,11 +36,12 @@ pytest>=8.0
 psycopg[binary,pool]>=3.2
 pgvector>=0.3
 sqlparse>=0.5
-pandas>=2.2
-numpy>=1.26
 scipy>=1.13
 matplotlib>=3.8
 plotly>=5.22
+# Parquet export (src/utils/export.py). Imported directly, so declared
+# directly rather than relied on as a dependency of streamlit.
+pyarrow>=15
 fastapi>=0.111
 uvicorn[standard]>=0.30
 httpx>=0.27
@@ -46,5 +50,4 @@ httpx>=0.27
 # plan named: the handler API this server is written against is 2.x, and a 1.x
 # install would import and then fail to start.
 mcp>=2.2
-pytest>=8.0
 ruff~=0.16.0
