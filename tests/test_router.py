@@ -33,6 +33,12 @@ def test_asking_which_floats_carry_a_sensor_is_a_summary_question():
     scope guard refused a question every BGC summary answers in one clause."""
     assert rule_route("which floats measure dissolved oxygen in the Arabian Sea") == "summaries"
     assert rule_route("floats with an oxygen sensor") == "summaries"
+    # Three words of sensor name. Asked in the app, this went to SQL and
+    # timed out, because the pattern allowed one word before "sensor".
+    assert (
+        rule_route("which floats in the Bay of Bengal carry a dissolved oxygen sensor")
+        == "summaries"
+    )
 
 
 def test_a_chart_verb_still_beats_a_summary_phrase():

@@ -136,3 +136,30 @@ def test_a_turn_with_no_answer_yet_is_still_usable(stub):
     rewrite("and in 2022?", [("what about the Bay of Bengal", "")])
 
     assert "what about the Bay of Bengal" in stub["prompt"]
+
+
+def test_a_rewrite_that_drops_the_float_the_user_named_is_discarded(stub):
+    """Asked "tell me about float 1902373" with two turns of history in view,
+    the model replied "Tell me about that float." A question that names its
+    subject has nothing to resolve, and a rewrite that loses the number the
+    user typed is a different question."""
+    stub["reply"] = "Tell me about that float."
+
+    assert rewrite("Tell me about float 1902373", HISTORY) == "Tell me about float 1902373"
+
+
+def test_a_rewrite_that_keeps_the_number_is_accepted(stub):
+    stub["reply"] = "What did float 1902373 measure in the Bay of Bengal?"
+
+    assert (
+        rewrite("what did 1902373 measure there?", HISTORY)
+        == "What did float 1902373 measure in the Bay of Bengal?"
+    )
+
+
+def test_a_rewrite_may_add_a_number_from_the_conversation(stub):
+    """Carrying 2021 over from the history is resolving an elision, which is
+    the job; only losing a number the user typed is forbidden."""
+    stub["reply"] = "average surface temperature in the Arabian Sea in 2021 below 500 dbar"
+
+    assert rewrite("and below 500 dbar?", HISTORY).endswith("below 500 dbar")

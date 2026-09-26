@@ -54,7 +54,8 @@ SUMMARY_WORDS = re.compile(
     # Sent to SQL, the model invented a dissolved_oxygen_qc column and the
     # scope guard refused a question the index could answer.
     r"|which floats? (?:measure|carry|carries|record)"
-    r"|(?:carry|carries|carrying|with) (?:an? )?\w*\s?sensors?)\b",
+    # Up to three words for the sensor name: "a dissolved oxygen sensor".
+    r"|(?:carry|carries|carrying|with) (?:an? )?(?:\w+ ){0,3}sensors?)\b",
     re.I,
 )
 

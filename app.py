@@ -375,6 +375,26 @@ def _render_answer(svc, question, result, position):
         f"(decided by {result['route_decided_by']})"
     )
 
+    rewritten = result.get("question_rewritten")
+
+    if rewritten and rewritten != question:
+        # Shown rather than hidden, on every route: if the follow up was
+        # resolved into the wrong question, or the translation changed its
+        # meaning, this line is the only way to see it. It was once shown for
+        # data answers only, and a rewrite that turned a named float into
+        # "that float" went unnoticed on the summaries route because of it.
+        st.caption(f"Answered as: {rewritten}")
+
+    if result.get("language"):
+        st.caption(
+            f"Detected {result['language']}. The query ran in English and the "
+            "answer was translated back."
+        )
+
+        if result.get("answer_english"):
+            with st.expander("Answer before translation"):
+                st.write(result["answer_english"])
+
     if result["route"] == "summaries":
         _render_summaries(result)
         return
@@ -388,24 +408,6 @@ def _render_answer(svc, question, result, position):
         return
 
     st.success(result["answer"])
-
-    rewritten = result.get("question_rewritten")
-
-    if rewritten and rewritten != question:
-        # Shown rather than hidden: if the follow up was resolved into the
-        # wrong question, or the translation changed its meaning, this line is
-        # the only way to see it.
-        st.caption(f"Answered as: {rewritten}")
-
-    if result.get("language"):
-        st.caption(
-            f"Detected {result['language']}. The query ran in English and the "
-            "answer was translated back."
-        )
-
-        if result.get("answer_english"):
-            with st.expander("Answer before translation"):
-                st.write(result["answer_english"])
 
     if result.get("chart_spec"):
         # A domain plot: a track, a cast, a section or a T-S cloud. Interactive,

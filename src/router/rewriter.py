@@ -20,6 +20,7 @@ ask, with no way to tell.
 from __future__ import annotations
 
 import os
+import re
 
 import httpx
 
@@ -77,7 +78,26 @@ def rewrite(question: str, history: list[tuple[str, str]]) -> str:
     except Exception:
         return question
 
-    return _clean(raw) or question
+    rewritten = _clean(raw) or question
+
+    if not keeps_identifiers(question, rewritten):
+        # The model did the opposite of its job: asked "tell me about float
+        # 1902373" with two earlier turns in view, it answered "Tell me about
+        # that float." A question that names a float, a year or a depth has
+        # already resolved its own subject, and a rewrite that drops the
+        # number the user typed is answering a different question.
+        return question
+
+    return rewritten
+
+
+# A float id, a year or a pressure: any number long enough to be a subject.
+_NUMBER = re.compile(r"\b\d{4,}\b")
+
+
+def keeps_identifiers(question: str, rewritten: str) -> bool:
+    """Whether every number the user typed survives in the rewrite."""
+    return set(_NUMBER.findall(question)) <= set(_NUMBER.findall(rewritten))
 
 
 def build_prompt(question: str, history: list[tuple[str, str]]) -> str:
