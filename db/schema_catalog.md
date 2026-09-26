@@ -65,6 +65,7 @@ parameter's own flag, for example `oxygen_qc = 1`.
 ARGO quality flags: 1 good, 2 probably good, 3 probably bad, 4 bad,
 5 changed, 8 interpolated, 9 missing.
 
+<!-- drifters -->
 ## drifters
 
 Surface drifting buoys from the Global Drifter Program. A second in-situ
@@ -105,6 +106,7 @@ One row per buoy per six-hour fix.
 There is no QC flag column here: the source product is already quality
 controlled, so there is no per-row flag to filter on. Do not invent one, and do
 not apply the `qc_flag = 1` rule to this table.
+<!-- /drifters -->
 
 ## Conventions
 
@@ -118,6 +120,7 @@ not apply the `qc_flag = 1` rule to this table.
   `chlorophyll_mg_m3`, `nitrate_umol_kg`, `ph_total`, `backscatter_700`
 - Always exclude rows with `temperature_c IS NULL` from averages
 - Join path for Argo: `measurements -> profiles -> floats`
+<!-- drifters -->
 - Join path for buoys: `drifter_observations -> drifters`
 - The two platforms do not join to each other. A question comparing them is
   answered by aggregating each separately, for example with two CTEs, because
@@ -125,6 +128,7 @@ not apply the `qc_flag = 1` rule to this table.
 - `qc_flag = 1` applies to `measurements` only, never to `drifter_observations`
 - Alias `drifter_observations` as `obs` and `drifters` as `d`. Do not alias it
   as `do`: that is a PostgreSQL keyword and the validator rejects the query
+<!-- /drifters -->
 - For yearly aggregates use `date_trunc('year', obs_time)`
 - Prefer `qc_flag = 1`. Fall back to `temperature_qc = 1` only when the
   question is about temperature alone

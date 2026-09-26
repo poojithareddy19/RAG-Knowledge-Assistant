@@ -177,7 +177,7 @@ def test_a_changed_schema_catalog_invalidates_the_cache(monkeypatch):
     monkeypatch.setattr(
         generator,
         "build_context",
-        lambda include_examples=True: "a different schema",
+        lambda include_examples=True, include_drifters=True: "a different schema",
     )
 
     assert cache_version("") != before

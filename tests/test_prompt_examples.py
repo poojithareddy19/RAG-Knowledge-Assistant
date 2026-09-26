@@ -154,3 +154,74 @@ def test_the_profile_example_asks_for_enough_rows_for_high_resolution_casts():
     """A high-resolution float reports about a thousand levels a cast. At the
     default limit of 500 one cast was cut in half and drawn as complete."""
     assert "LIMIT 5000" in PROFILE_EXAMPLE
+
+
+# ---------------------------------------------------------------------------
+# The buoy half of the schema, and the size of the prompt
+# ---------------------------------------------------------------------------
+
+
+def test_argo_questions_are_not_shown_the_buoy_tables():
+    """They were a sixth of the prompt, paid by every question."""
+    prompt = build_prompt("How many profiles are there in the Bay of Bengal?")
+
+    assert "## drifter_observations" not in prompt
+    assert "Join path for buoys" not in prompt
+    assert "<!--" not in prompt
+
+
+def test_buoy_questions_are_shown_the_buoy_tables():
+    prompt = build_prompt("Mean surface current speed of the drifting buoys")
+
+    assert "## drifters" in prompt
+    assert "## drifter_observations" in prompt
+    assert "Join path for buoys" in prompt
+    assert "<!--" not in prompt
+
+
+def test_editing_the_buoy_tables_still_invalidates_the_cache(monkeypatch):
+    """The digest is taken with an empty question, which is not shown the buoy
+    tables, so they are folded in explicitly."""
+    from src.sqlgen import generator, schema_context
+
+    before = cache_version("")
+    real = schema_context.load_catalog
+
+    def edited(include_drifters=True):
+        text = real(include_drifters)
+        return text + "\nan edited buoy column" if include_drifters else text
+
+    monkeypatch.setattr(schema_context, "load_catalog", edited)
+
+    assert generator.build_prompt("How many floats?") == generator.build_prompt(
+        "How many floats?"
+    )
+    assert cache_version("") != before
+
+
+def test_the_largest_prompt_fits_the_context_window():
+    """Ollama does not refuse a prompt that is too long, it cuts the middle out.
+
+    That happened to every SQL prompt for a day before anyone looked: the
+    model was shown the first 4 and last 2,046 tokens of a 4,165-token prompt.
+    This asks the worst case, a question shown every gated example and the
+    buoy schema, with room for the summaries, the coverage note and the
+    output, and holds it under the configured window.
+
+    Calibrated against Ollama's own count on 2026-09-26: this worst case with
+    the four longest summaries in the database (1,745 characters) was 18,150
+    characters and 4,915 tokens, 3.69 characters a token. The guard assumes
+    3.5 and 2,500 characters of summaries, both on the side of failing.
+    """
+    from src.generation.llm import num_ctx
+
+    worst = build_prompt(
+        "Plot BGC oxygen profiles against drifting buoy sea surface temperature",
+        context="x" * 2500,
+    )
+    coverage_allowance = 700
+    output_tokens = 400
+
+    estimated = (len(worst) + coverage_allowance) / 3.5 + output_tokens
+
+    assert estimated < num_ctx(), f"~{estimated:.0f} tokens against a window of {num_ctx()}"

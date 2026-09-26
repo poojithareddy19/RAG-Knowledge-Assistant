@@ -58,6 +58,7 @@ class Answer:
     prompt: str | None = None       # populated when expose_prompt is on
     reason: str = ""                   # why an answer was declined, if so
     error: str | None = None
+    trace_id: str | None = None        # joins this answer to its spans
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,4 +75,5 @@ class Answer:
             "prompt": self.prompt,
             "reason": self.reason,
             "error": self.error,
+            "trace_id": self.trace_id,
         }

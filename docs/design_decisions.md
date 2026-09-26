@@ -126,3 +126,22 @@ real archive.
 One JSON object per line is greppable, streamable, and loads straight into
 pandas without a database. The same log feeds the monitoring dashboard and
 offline evaluation, so operational data and eval data never drift apart.
+
+## OpenTelemetry tracing beside the log, not instead of it
+
+The log has one line per question, which is right for evaluation and the
+dashboard and useless for asking why one answer took 70 seconds. One question
+can make four model calls (rewrite, route, write SQL, repair it) and
+a database query, and only a trace shows them in order with their own timings.
+
+OpenTelemetry rather than a tracing product, because the spans are then
+vendor-neutral: the same instrumentation writes to a local file by default and
+to Jaeger, Phoenix or Langfuse by setting one environment variable. A
+self-hosted Langfuse was the alternative, and it needs its own Postgres,
+ClickHouse and web containers, which this machine cannot spare. The default
+exporter is a file, synchronous per span, so a killed Streamlit rerun does not
+lose the spans still queued.
+
+Prompt text is off by default. Questions can be personal, and the interaction
+log already holds the question and answer; the trace's job is timing and
+tokens.

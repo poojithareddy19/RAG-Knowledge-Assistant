@@ -16,7 +16,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.monitoring.tracing import llm_span, record_ollama
 from src.utils.config import get_config
+
+DEFAULT_NUM_CTX = 6144
+
+
+def num_ctx() -> int:
+    """The context window sent with every Ollama call.
+
+    One value for every call site, not one per call: Ollama reloads the model
+    whenever the requested window changes, which on this hardware costs more
+    than the call itself.
+    """
+    try:
+        return int((get_config().get("ollama", {}) or {}).get("num_ctx", DEFAULT_NUM_CTX))
+    except Exception:
+        return DEFAULT_NUM_CTX
 
 
 @dataclass
@@ -44,21 +60,32 @@ class OllamaLLM(BaseLLM):
     def generate(self, system_prompt: str, user_prompt: str) -> LLMResponse:
         import requests
 
-        resp = requests.post(
-            f"{self.base_url}/api/chat",
-            json={
-                "model": self.model,
-                "stream": False,
-                "options": {"temperature": self.temperature},
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        with llm_span(
+            "answer",
+            self.model,
+            operation="chat",
+            temperature=self.temperature,
+        ) as span:
+            resp = requests.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.temperature,
+                        "num_ctx": num_ctx(),
+                    },
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            record_ollama(span, data, prompt=f"{system_prompt}\n\n{user_prompt}")
+
         return LLMResponse(
             text=data.get("message", {}).get("content", ""),
             tokens={

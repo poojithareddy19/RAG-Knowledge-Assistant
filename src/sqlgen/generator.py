@@ -8,6 +8,8 @@ import re
 
 import httpx
 
+from src.generation.llm import num_ctx
+from src.monitoring.tracing import llm_span, record_ollama
 from src.sqlgen.schema_context import build_context, data_coverage
 from src.sqlgen.scope import out_of_scope
 from src.utils import cache
@@ -58,7 +60,7 @@ They are background, not query terms:
 # Invalidation is automatic: cache_version digests the whole prompt, so any
 # edit here already retires the old entries. This constant is only a
 # human-readable marker of prompt lineage.
-PROMPT_VERSION = "13"
+PROMPT_VERSION = "14"
 
 # One worked example rather than a rule alone, because the rule says what to
 # select and the example shows the shape: ordered by time, one row per cycle.
@@ -315,9 +317,13 @@ def build_prompt(
 ) -> str:
     """Assemble the full prompt, with the semantic block only when there is one."""
 
+    # The buoy schema goes with the buoy examples: only a question that could
+    # be about the buoys is shown either.
+    drifters = drifter_example_applies(question)
+
     sections = [
         SYSTEM,
-        f"=== SCHEMA ===\n{build_context(include_examples)}",
+        f"=== SCHEMA ===\n{build_context(include_examples, include_drifters=drifters)}",
     ]
 
     # Where the archive starts and ends, so a relative period in the question
@@ -336,7 +342,7 @@ def build_prompt(
         # the two here are the only ones naming a table most questions must
         # not go near: an Argo question that reaches for drifter_observations
         # is answering from the wrong platform entirely.
-        if drifter_example_applies(question):
+        if drifters:
             sections.append(DRIFTER_EXAMPLE)
 
         if profile_example_applies(question):
@@ -389,7 +395,8 @@ def build_repair_prompt(
 
     sections = [
         REPAIR,
-        f"=== SCHEMA ===\n{build_context(include_examples)}",
+        f"=== SCHEMA ===\n"
+        f"{build_context(include_examples, include_drifters=drifter_example_applies(question))}",
     ]
 
     if context.strip():
@@ -420,14 +427,16 @@ def cache_version(
     and left every cached entry looking valid, so the cache would have served
     SQL written by a model that had never heard of those columns.
 
-    The empty question here means the drifter examples, which only some
-    questions are shown, would fall out of the digest and stop invalidating
-    anything when edited. They are appended explicitly so the one rule above
-    still holds for every section of the prompt, whoever sees it.
+    The empty question here means the drifter examples and the buoy half of
+    the catalog, which only some questions are shown, would fall out of the
+    digest and stop invalidating anything when edited. They are appended
+    explicitly so the one rule above still holds for every section of the
+    prompt, whoever sees it.
     """
     digest = hashlib.sha256(
         (
             build_prompt("", context, include_examples)
+            + build_context(include_examples, include_drifters=True)
             + (
                 DRIFTER_EXAMPLE + PROFILE_EXAMPLE + BGC_EXAMPLE
                 if include_examples
@@ -439,7 +448,13 @@ def cache_version(
     return f"{PROMPT_VERSION}:{digest}"
 
 
-def _complete(prompt: str, model: str | None, timeout: int, predict: int) -> str:
+def _complete(
+    prompt: str,
+    model: str | None,
+    timeout: int,
+    predict: int,
+    step: str = "sql",
+) -> str:
     """One completion, with the retry that covers a cold model load."""
 
     base = os.environ.get(
@@ -459,28 +474,34 @@ def _complete(prompt: str, model: str | None, timeout: int, predict: int) -> str
         "options": {
             "temperature": 0,
             "num_predict": predict,
+            "num_ctx": num_ctx(),
         },
     }
 
-    try:
-        response = httpx.post(
-            f"{base}/api/generate",
-            json=payload,
-            timeout=timeout,
-        )
-    except httpx.TimeoutException:
-        # The first call after a restart pays for loading the model into
-        # memory, which on its own can outlast the timeout. By now that load
-        # has finished, so one retry is usually enough.
-        response = httpx.post(
-            f"{base}/api/generate",
-            json=payload,
-            timeout=timeout,
-        )
+    with llm_span(step, model, temperature=0, max_tokens=predict) as span:
+        try:
+            response = httpx.post(
+                f"{base}/api/generate",
+                json=payload,
+                timeout=timeout,
+            )
+        except httpx.TimeoutException:
+            # The first call after a restart pays for loading the model into
+            # memory, which on its own can outlast the timeout. By now that load
+            # has finished, so one retry is usually enough.
+            span.add_event("retry after timeout")
+            response = httpx.post(
+                f"{base}/api/generate",
+                json=payload,
+                timeout=timeout,
+            )
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    return _clean(response.json()["response"])
+        data = response.json()
+        record_ollama(span, data, prompt=prompt)
+
+    return _clean(data["response"])
 
 
 def repair_sql(
@@ -515,6 +536,7 @@ def repair_sql(
         model,
         timeout,
         400,
+        step="sql_repair",
     )
 
 

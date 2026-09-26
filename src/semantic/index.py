@@ -15,6 +15,7 @@ import re
 import numpy as np
 
 from src.embeddings.embedding_model import get_embedding_model
+from src.monitoring.tracing import set_attributes, span
 from src.semantic.summaries import collect
 from src.utils.config import get_config
 from src.utils.db import cursor
@@ -118,6 +119,20 @@ class SemanticIndex:
         asking for float 2900007 scores it 0.703 against 0.701 for an unrelated
         float. A question that names a float should get that float.
         """
+        with span("retrieve", **{"floatchat.top_k": k or self.top_k}) as step:
+            hits = self._search(question, k)
+            set_attributes(
+                step,
+                **{
+                    "floatchat.hits": len(hits),
+                    "floatchat.top_score": round(hits[0].score, 4) if hits else None,
+                    "floatchat.subjects": [hit.subject for hit in hits],
+                },
+            )
+
+        return hits
+
+    def _search(self, question: str, k: int | None = None) -> list[Summary]:
         limit = k or self.top_k
 
         named = self._by_identifier(question)

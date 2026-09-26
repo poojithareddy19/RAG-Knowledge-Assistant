@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.schemas import AskRequest, AskResponse, HealthResponse
+from src.monitoring.tracing import span, trace_id
 from src.utils.config import get_config
 from src.utils.db import fetch_all
 from src.utils.pipeline import RAGService
@@ -126,17 +127,24 @@ def ask(req: AskRequest) -> AskResponse:
     svc = service()
 
     if req.route_override == "summaries":
-        result = svc.answer_from_summaries(req.question)
+        with span("floatchat.answer", **{"floatchat.route_override": "summaries"}) as root:
+            result = svc.answer_from_summaries(req.question)
         result["route"] = "summaries"
         result["route_decided_by"] = "override"
+        result["trace_id"] = trace_id(root)
 
     elif req.route_override in ("data", "chart"):
-        result = svc.answer_from_data(
-            req.question,
-            want_chart=(req.route_override == "chart"),
-        )
+        with span(
+            "floatchat.answer",
+            **{"floatchat.route_override": req.route_override},
+        ) as root:
+            result = svc.answer_from_data(
+                req.question,
+                want_chart=(req.route_override == "chart"),
+            )
         result["route"] = req.route_override
         result["route_decided_by"] = "override"
+        result["trace_id"] = trace_id(root)
 
     else:
         result = svc.answer(

@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -35,10 +36,25 @@ def load_column_catalog():
     }
 
 
-def load_catalog():
+# The buoy tables and their conventions are marked in the catalog so an Argo
+# question can be shown the catalog without them. They were a sixth of the SQL
+# prompt, paid by every question, and the prompt had outgrown the model's
+# context window: Ollama cut it to its first and last tokens and the model
+# never saw the rules. The markers themselves never reach the model.
+_DRIFTER_BLOCK = re.compile(r"<!-- drifters -->\n.*?<!-- /drifters -->\n", re.S)
+_MARKER = re.compile(r"<!-- /?drifters -->\n")
+
+
+def load_catalog(include_drifters=True):
     if not CATALOG.exists():
         raise FileNotFoundError(f"missing {CATALOG}")
-    return CATALOG.read_text(encoding="utf-8")
+
+    text = CATALOG.read_text(encoding="utf-8")
+
+    if not include_drifters:
+        text = _DRIFTER_BLOCK.sub("", text)
+
+    return _MARKER.sub("", text)
 
 
 def load_examples(limit=4):
@@ -67,8 +83,8 @@ def load_examples(limit=4):
     return out
 
 
-def build_context(include_examples=True):
-    parts = [load_catalog()]
+def build_context(include_examples=True, include_drifters=True):
+    parts = [load_catalog(include_drifters)]
 
     if include_examples:
         for ex in load_examples():

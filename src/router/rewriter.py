@@ -24,6 +24,8 @@ import re
 
 import httpx
 
+from src.generation.llm import num_ctx
+from src.monitoring.tracing import llm_span, record_ollama
 from src.utils.config import get_config
 
 SYSTEM = """You rewrite a follow up question so that it can be understood on \
@@ -169,20 +171,25 @@ def _call_model(prompt: str, timeout: int = 30) -> str:
         "llama3.1:latest",
     )
 
-    response = httpx.post(
-        f"{base}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0,
-                "num_predict": 120,
+    with llm_span("rewrite", model, temperature=0, max_tokens=120) as span:
+        response = httpx.post(
+            f"{base}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0,
+                    "num_predict": 120,
+                    "num_ctx": num_ctx(),
+                },
             },
-        },
-        timeout=timeout,
-    )
+            timeout=timeout,
+        )
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    return response.json()["response"]
+        data = response.json()
+        record_ollama(span, data, prompt=prompt)
+
+    return data["response"]

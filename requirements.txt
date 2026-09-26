@@ -20,6 +20,10 @@ sentence-transformers>=3.0,<4.0
 # LLM provider
 requests>=2.31
 
+# Tracing: spans to logs/traces.jsonl, or any OTLP collector when configured
+opentelemetry-sdk>=1.30,<2.0
+opentelemetry-exporter-otlp-proto-http>=1.30,<2.0
+
 # Testing
 pytest>=8.0
 

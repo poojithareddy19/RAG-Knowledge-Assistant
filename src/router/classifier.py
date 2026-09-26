@@ -4,6 +4,9 @@ import re
 
 import httpx
 
+from src.generation.llm import num_ctx
+from src.monitoring.tracing import llm_span, record_ollama
+
 ROUTES = ("summaries", "data", "chart")
 
 
@@ -83,24 +86,31 @@ def model_route(question, model=None, timeout=30):
     model = model or os.environ.get("ROUTER__MODEL", "llama3.1:latest",
     )
 
-    r = httpx.post(
-        f"{base}/api/generate",
-        json={
-            "model": model,
-            "prompt": f"{SYSTEM}\n\nQuestion: {question}\nJSON:",
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0,
-                "num_predict": 80,
+    prompt = f"{SYSTEM}\n\nQuestion: {question}\nJSON:"
+
+    with llm_span("route", model, temperature=0, max_tokens=80) as span:
+        r = httpx.post(
+            f"{base}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "options": {
+                    "temperature": 0,
+                    "num_predict": 80,
+                    "num_ctx": num_ctx(),
+                },
             },
-        },
-        timeout=timeout,
-    )
+            timeout=timeout,
+        )
 
-    r.raise_for_status()
+        r.raise_for_status()
 
-    payload = json.loads(r.json()["response"])
+        data = r.json()
+        record_ollama(span, data, prompt=prompt)
+
+    payload = json.loads(data["response"])
 
     route = str(payload.get("route", "")).strip().lower()
 

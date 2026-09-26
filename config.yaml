@@ -22,6 +22,16 @@ embeddings:
   batch_size: 32
   device: "cpu"
 
+ollama:
+  # The context window every call asks for, in tokens. Left unset, Ollama used
+  # 4096 here, and a prompt longer than that is not refused but silently cut:
+  # it keeps the first 4 tokens and the last ~2,046 and drops the middle, which
+  # is where the SQL prompt keeps its rules and most of the schema. The SQL
+  # prompt measured 4,105 to 4,404 tokens on 2026-09-26 and was cut every time.
+  # 6144 fits the largest of those plus 400 tokens of output. Every call sends
+  # the same value, because Ollama reloads the model when num_ctx changes.
+  num_ctx: 6144
+
 generation:
   provider: "ollama"
   model: "llama3.1:latest"
@@ -36,17 +46,6 @@ router:
   # The summaries path declines when nothing is close enough, so an unplaced
   # question ends in a refusal rather than in SQL written against a guess.
   fallback: "summaries"
-
-multilingual:
-  # A question in another language is translated to English at the edge and the
-  # answer translated back. Everything inside, the router, the SQL generator and
-  # the cache, stays English so nothing downstream learns about language.
-  enabled: true
-  # Detection is a script test, so an English question costs no model call.
-  # Turning this on routes every question through the translator instead, which
-  # is what catches French or Indonesian at the cost of a call per question.
-  always_translate: false
-  answer_in_source_language: true
 
 conversation:
   # A follow up is rewritten into a standalone question before routing, so the
@@ -119,3 +118,14 @@ api:
 monitoring:
   log_file: "logs/interactions.jsonl"
   level: "INFO"
+  # OpenTelemetry spans for every step and model call behind a question.
+  # Written to `file` always; also sent over OTLP/HTTP when otlp_endpoint or
+  # OTEL_EXPORTER_OTLP_ENDPOINT is set (Jaeger, Phoenix and Langfuse all take it).
+  tracing:
+    enabled: true
+    service_name: "floatchat"
+    file: "logs/traces.jsonl"
+    otlp_endpoint: null
+    # Prompt and completion text on the model spans. Off: questions can be
+    # personal, and interactions.jsonl already keeps the question and answer.
+    capture_content: false

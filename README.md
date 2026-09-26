@@ -1,12 +1,12 @@
 # FloatChat
 
-Ask the Argo float archive a question in your own language and get an answer you can check.
+Ask the Argo float archive a question in plain English and get an answer you can check.
 
 Two kinds of question, one system. **What does the archive hold?** is answered from one-sentence summaries of every float and every region in the database, retrieved by embedding, with the float or region behind every claim. **What does the data say?** is answered by SQL generated against the measurements database, shown to you before you are asked to believe the numbers. A router decides which, so the user asks a question rather than choosing a tool.
 
 Both halves are built around one constraint: being confidently wrong is worse than saying nothing. The summaries path cites its source and declines when the evidence is thin. The data path shows the exact query that produced the table, and that query runs as a read-only database user after passing a validator.
 
-> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer of float and region summaries in pgvector that both answers questions directly with citations and tells the SQL generator what the database actually holds, text-to-SQL with a four-layer safety path, a rule-first query router, conversational follow-ups, multilingual questions answered in the language they were asked in, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, a Streamlit dashboard, a FastAPI service and a React front end, with the Docker stage proven and images published from CI. Measured: [0.567 execution accuracy](#results) on 67 SQL questions across two models, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.957](#retrieval-results) on 23 summary questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
+> **Build status.** Working end to end: NetCDF ingestion of real Argo profiles with core and biogeochemical parameters and per-parameter QC, a semantic layer of float and region summaries in pgvector that both answers questions directly with citations and tells the SQL generator what the database actually holds, text-to-SQL with a four-layer safety path, a rule-first query router, conversational follow-ups, a second in-situ platform in 187 drifting buoys, ocean charts including overlaid profile comparisons, a Streamlit dashboard, a FastAPI service and a React front end, with the Docker stage proven and images published from CI. Measured: [0.617 execution accuracy](#results) on 67 SQL questions, [7/7 correct refusals](#closing-it-without-the-model), and [hit@5 of 0.957](#retrieval-results) on 23 summary questions. See [Limitations](#limitations) and [Roadmap](#roadmap).
 
 ---
 
@@ -100,7 +100,8 @@ Full reasoning for each choice is in [`docs/design_decisions.md`](docs/design_de
 | API             | FastAPI + Pydantic                        | same service object as Streamlit  |
 | UI              | Streamlit (5 pages) and a React front end |                                   |
 | Evaluation      | retrieval, generation and SQL execution metrics |                             |
-| Logging         | structured JSONL                          |                                   |
+| Logging         | structured JSONL                          | one line per question             |
+| Tracing         | OpenTelemetry, GenAI conventions          | JSONL by default, OTLP optional   |
 | Config          | `config.yaml` + environment overrides     |                                   |
 | Delivery        | Docker images built and published by CI   | no cloud host, by choice          |
 
@@ -117,11 +118,11 @@ FloatChat-ARGO-RAG/
 │   ├── embeddings/  embedding_model.py
 │   ├── semantic/    summaries.py · index.py · confidence.py   # the corpus, and the SQL context
 │   ├── generation/  prompt.py · llm.py · answer_generator.py  # the summaries route
-│   ├── router/      classifier.py · rewriter.py · translator.py
+│   ├── router/      classifier.py · rewriter.py
 │   ├── sqlgen/      generator.py · validator.py · executor.py · schema_context.py · scope.py
 │   ├── charts/      builder.py · ocean.py
 │   ├── evaluation/  metrics.py · evaluator.py · generation_metrics.py · sql_metrics.py · ab_test.py
-│   ├── monitoring/  logger.py · analytics.py
+│   ├── monitoring/  logger.py · analytics.py · tracing.py
 │   ├── api/         main.py · schemas.py                 # FastAPI
 │   └── utils/       config.py · schemas.py · db.py · cache.py · pipeline.py
 ├── db/              001_schema.sql … 009_drop_doc_chunks.sql
@@ -245,27 +246,6 @@ What changed when the polygons replaced the inequalities, over 1,099 real profil
 
 128 profiles, nearly one in eight, were in the wrong basin. The inequalities put everything north of 5N and west of 78E in the Arabian Sea, which swept in a slice of ocean the IHO does not consider part of it.
 
-### Asking in another language
-
-The problem statement comes from an Indian ministry, so the languages that matter most are Hindi, Bengali, Tamil, Telugu, Malayalam and their neighbours. Ask in any of them and the answer comes back in the same language.
-
-```
-अरब सागर में औसत सतही तापमान क्या है
-  detected   Hindi or Marathi
-  as English What is the average surface temperature of the Arabian Sea?
-  answer     5 row(s) प्राप्त होते हैं column वर्ष, क्षेत्र, mean_surface_temperature
-```
-
-Translation happens at the edge in [`src/router/translator.py`](src/router/translator.py), in front of routing and beside the follow-up rewriter. Everything inside stays English: the router, the SQL generator, the schema catalog and the SQL cache never learn that language exists, so the cache does not fragment into one entry per language for the same question.
-
-**Detection is a script test, not a model call.** A question containing Devanagari is not English and no model is needed to establish that, so an English question costs nothing at all. That is the cheap half. The honest limit is written into the module: French and Indonesian are Latin script and will be taken for English. Setting `multilingual.always_translate` routes every question through the model instead, which catches those at the cost of one call on every question.
-
-Two things are visible rather than hidden. The page shows the detected language and the English the query actually ran as, and the English answer is kept under an expander. A translation that changes the meaning of a question is the obvious new failure mode here, and it is only catchable if you can see both.
-
-Every failure degrades to the behaviour that existed before the feature: a model that times out, returns nothing, or is switched off leaves the question exactly as typed.
-
-This does not affect the [published numbers](#results). English questions skip the translator entirely and the SQL prompt is unchanged, so the 67-question benchmark measures the same system it did before.
-
 ### Load the drifting buoys
 
 The second in-situ platform, and the point at which "extensible to other observations" stops being a claim. Argo floats profile the water column and surface every ten days; drifters ride the surface and report where the current carried them. Same ocean, different instrument, different table shape.
@@ -355,6 +335,20 @@ cd web && npm install && npm run dev
 ```
 
 Same principle as the dashboard: the route, the SQL and the citations travel with every answer, and a refusal renders as a result rather than an error.
+
+### Tracing
+
+`logs/interactions.jsonl` says what each question got. `logs/traces.jsonl` says where its time went. Every question is one OpenTelemetry trace: a `floatchat.answer` root with a span per step under it (`rewrite`, `route`, `retrieve`, `sql.generate`, `sql.validate`, `db.query`, `chart.ocean`, `chart.render`), and an `llm.<step>` span for each place the model is called. Model spans carry the GenAI semantic convention attributes (`gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`) and Ollama's own timings, so a slow answer can be told apart from a cold model: in one live run, 17.8 s of the first model call's 32 s was `ollama.load_duration_ms`.
+
+The `trace_id` is returned by `POST /ask` and written into `interactions.jsonl`, so one id joins the response, the log line and the trace.
+
+To view traces in a UI instead of a file, point the exporter at any OTLP/HTTP collector. Jaeger, Arize Phoenix and Langfuse all accept it:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 uvicorn src.api.main:app
+```
+
+Prompt and completion text is left off the spans unless `monitoring.tracing.capture_content` is turned on in `config.yaml`.
 
 ## Deploying
 
@@ -448,33 +442,45 @@ summaries, buckets, detail = evaluate_runs(runs=3)
 
 The set was 52 questions and entirely Argo until the `drifter` bucket was added. Every figure below is the larger set, so it is not comparable line by line with the 0.620 and 0.587 quoted elsewhere in this README, which were measured on the 52.
 
-Two models, both local through Ollama, on the same questions and the same prompt. `llama3.1:8b` is the default the system ships with; `qwen2.5-coder:7b` is a code specialist, run to find out whether the two ceilings this benchmark keeps hitting are the model's or the prompt's.
+`llama3.1:8b` is the default the system ships with. The first column is the current system, measured on 2026-09-26 after the [prompt stopped being cut](#the-prompt-was-being-cut). The other two are the earlier measurements, kept for comparison: `llama3.1:8b` and `qwen2.5-coder:7b`, a code specialist, on the same 67 questions with the previous prompt and Ollama's default 4,096-token window. They were run to find out whether the ceilings this benchmark keeps hitting are the model's or the prompt's.
 
-| Metric | `llama3.1:8b` | `qwen2.5-coder:7b` |
-| ------------------------- | ----- | ----- |
-| **Execution accuracy**    | **0.567** | **0.483** |
-| Validation pass rate      | 0.983 | 0.967 |
-| Execution rate            | 0.933 | 0.850 |
-| **Correct refusal rate**  | **1.000 (7/7)** | 0.857 (6/7) |
-| False refusal rate        | 0.017 | 0.050 |
-| Median latency            | 31.5 s | 50.2 s |
+| Metric | `llama3.1:8b`, current | `llama3.1:8b`, earlier | `qwen2.5-coder:7b`, earlier |
+| ------------------------- | ----- | ----- | ----- |
+| **Execution accuracy**    | **0.617** (37/60) | 0.567 (34/60) | 0.483 |
+| Validation pass rate      | 1.000 | 0.983 | 0.967 |
+| Execution rate            | 0.967 | 0.933 | 0.850 |
+| **Correct refusal rate**  | **1.000 (7/7)** | 1.000 (7/7) | 0.857 (6/7) |
+| False refusal rate        | 0.000 | 0.017 | 0.050 |
+| Median latency            | 38.5 s | 31.5 s | 50.2 s |
 
-| Bucket | Questions | `llama3.1:8b` | `qwen2.5-coder:7b` |
-| ------------ | --- | ----- | ----- |
-| filter       | 8   | 0.875 | 0.500 |
-| easy         | 8   | 0.875 | 0.250 |
-| groupby      | 6   | 0.833 | 0.833 |
-| join         | 8   | 0.500 | 0.500 |
-| drifter      | 14  | 0.429 | **0.571** |
-| qc           | 5   | 0.400 | 0.400 |
-| bgc          | 5   | 0.400 | **0.600** |
-| window       | 6   | 0.167 | 0.167 |
-| unanswerable | 7   | **7/7 refused** | 6/7 refused |
+| Bucket | Questions | `llama3.1:8b`, current | `llama3.1:8b`, earlier | `qwen2.5-coder:7b`, earlier |
+| ------------ | --- | ----- | ----- | ----- |
+| easy         | 8   | 1.000 | 0.875 | 0.250 |
+| filter       | 8   | 0.750 | 0.875 | 0.500 |
+| groupby      | 6   | 0.667 | 0.833 | 0.833 |
+| join         | 8   | 0.625 | 0.500 | 0.500 |
+| drifter      | 14  | 0.571 | 0.429 | 0.571 |
+| qc           | 5   | 0.600 | 0.400 | 0.400 |
+| bgc          | 5   | 0.400 | 0.400 | 0.600 |
+| window       | 6   | 0.167 | 0.167 | 0.167 |
+| unanswerable | 7   | **7/7 refused** | 7/7 refused | 6/7 refused |
 
-Both columns are one run each on the same 67 questions, the same prompt and the
-same timeout, taken back to back with nothing else using the machine. This is
-the first time the two models have been compared on equal terms; the earlier
-qwen figures were measured on a different, smaller set.
+Every column is one run. The two earlier columns were taken back to back on the same prompt and the same timeout, so they compare with each other; the current column differs from them in the prompt, the context window and the machine's memory, and compares with them only as a before and after. **0.567 to 0.617 is three questions, inside the swing of about a tenth that two identical runs have [shown here](#on-repeated-runs), so it does not show that the fix raised accuracy.** Five questions moved to right and two to wrong. What it does show is that the fix cost nothing, and that the number now describes the prompt the system was written to send.
+
+#### The prompt was being cut
+
+The SQL prompt had grown to about 4,165 tokens, and Ollama was running `llama3.1` with its default window of 4,096. A prompt over the window is not refused. Ollama logs `truncating input prompt limit=2050 prompt=4161 keep=4 new=2050` and keeps the first 4 tokens and the last 2,046, so the model saw the question, the retrieved summaries and the tail of the examples, and none of the rules or most of the schema. Nothing in the application could see it: the trace reported 2,050 input tokens, which read as a prompt smaller than expected rather than one cut in half. The mismatch between that count and 15,559 characters of prompt is what gave it away.
+
+It also explained the timeouts. Ollama reuses the part of a prompt that matches the previous one, which is why a follow-up SQL call normally costs seconds. A cut prompt starts with its own tail, so nothing matched, every call re-read about 2,050 tokens at roughly 12 a second on this CPU, and most went past the 120 second limit into the retry.
+
+Two changes, both in this run:
+
+- **Every Ollama call now asks for a 6,144-token window** (`ollama.num_ctx` in `config.yaml`). The same value on every call, because Ollama reloads the model when it changes. 8,192 would not fit in this machine's memory beside the database and the embedding model.
+- **The buoy schema is shown only to questions that could be about the buoys**, gated the same way as the buoy examples already were. It was a sixth of the prompt and every Argo question paid for it. A typical question is now 3,570 tokens by Ollama's own count, and the worst case, a question shown every gated example and the buoy schema with the longest summaries in the database, is 4,915, which leaves room for the output. A test holds that worst case under the configured window, so the prompt cannot quietly outgrow it again.
+
+No prompt was cut during the current run. Whether the earlier columns were measured on cut prompts is not known: they predate the Ollama logs that survive, and the prompt then was estimated at about 3,260 tokens before the retrieved summaries were added, close enough to the limit that it cannot be ruled either way.
+
+The two questions that went wrong went wrong the same way, and it is worth recording because it may be the fix showing through. "How many measurements are deeper than 1000 decibars" gained `qc_flag = 1 AND temperature_c IS NOT NULL`, and "number of profiles per region" gained a join to surface measurements with a quality filter. Neither question asked for either. Those are the schema's own conventions ("ignore rows where `qc_flag <> 1`", "always exclude rows with `temperature_c IS NULL`"), which a cut prompt never showed the model, applied where they do not belong. That reading is plausible rather than proven, and a single run cannot establish it.
 
 Six of the seven unanswerable questions are refused by the [scope gate](#closing-it-without-the-model)
 and will not move between runs or between models. The seventh is the one added
@@ -540,7 +546,7 @@ The limit is written into the module rather than left for a reader to discover. 
 
 #### What the drifter bucket found
 
-For most of this project's life the gold set had 52 questions and not one was about the drifting buoys. The platform was reachable, exported, charted and refused against, and none of it was measured. 14 answerable questions and one unanswerable were added. The bucket scores **0.429**, second worst on the board.
+For most of this project's life the gold set had 52 questions and not one was about the drifting buoys. The platform was reachable, exported, charted and refused against, and none of it was measured. 14 answerable questions and one unanswerable were added. The bucket scored **0.429**, second worst on the board, in the earlier run this section analyses; the current run scores it 0.571, with the two SVPB questions below among the ones that moved.
 
 The failures are not spread evenly. They are three specific things, and the first two are caused by the fix that preceded them.
 
@@ -571,6 +577,8 @@ The third is the one that settles it. A general 8B model and a 7B code specialis
 So the reasonable conclusion is that window functions over this schema are beyond a 7-8B model at this quantisation, and the next thing worth trying is a larger model rather than a better prompt. That is a hardware question, and it is on the roadmap rather than in this section.
 
 #### Neither model is better, they are wrong about different things
+
+Both columns here are the earlier run, on the same prompt, which is what makes them comparable.
 
 | Bucket | `llama3.1:8b` | `qwen2.5-coder:7b` |
 | --- | --- | --- |
@@ -611,7 +619,7 @@ So the earlier conclusion holds and now has evidence behind it: **that fabricati
 
 That conclusion was right and is now moot. Both halves of it assumed the choice was which model to ask, and the [scope gate](#closing-it-without-the-model) does not ask one: `llama3.1:8b` refuses the seafloor question now, not because it learned anything but because the question no longer reaches it. The lesson worth keeping is the one the section was written to make, that a fabrication surviving three rewordings is telling you something about where the rule belongs, rather than asking for a fourth.
 
-Validation pass rate is 0.983 while accuracy is 0.567. Nearly every generated query was well formed, safe and executable, and four in ten still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
+Validation pass rate is 1.000 while accuracy is 0.617. Every generated query was well formed and safe, and nearly four in ten still answered the wrong question. That gap is the entire argument for measuring results rather than liveness.
 
 #### On repeated runs
 
@@ -743,11 +751,11 @@ For the measurements the argument is stronger still. The answer to "average surf
 
 **Architecture.** A question is answered from one route. One that needs a description and a computation, "which floats measure oxygen and how many readings do they hold", is routed to whichever half the wording favours and answered by that half alone. Summaries are rebuilt only when the script is run, so they drift from the tables between loads. Summarising is per float and per region; a database with thousands of floats will want coarser grouping than one summary each, and the exact scan that is right for 83 rows will want an index.
 
-**Retrieval and generation.** Retrieval over the summaries reaches hit@5 of 0.957 on 23 questions, but that gold set was written by the same person who wrote the summaries, which is the honest limit on what it shows. A summary carries statistics computed at index time, and a question that asks for a number under a condition the summaries do not carry has to reach the SQL path through the router, which decides by wording. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Embeddings are English-only, so the summaries route relies on the translator at the edge. Language detection is by script, so a Latin-script language other than English is taken for English unless `always_translate` is set.
+**Retrieval and generation.** Retrieval over the summaries reaches hit@5 of 0.957 on 23 questions, but that gold set was written by the same person who wrote the summaries, which is the honest limit on what it shows. A summary carries statistics computed at index time, and a question that asks for a number under a condition the summaries do not carry has to reach the SQL path through the router, which decides by wording. Confidence is a heuristic over retrieval signals, not a calibrated probability, so the threshold needs tuning against your own gold set. Questions are expected in English: the embeddings, the prompts and the SQL cache are English-only.
 
 **Charts.** The map basemap is served locally. Plotly fetches the land and coastlines of a geo plot as TopoJSON at render time and defaults to `cdn.plot.ly`, which made the one networked dependency in an otherwise offline app a map that came up empty with no error to explain it. The files are committed under `static/` and Plotly is pointed there through `topojsonURL`. Trajectories, depth profiles, depth-time sections and T-S diagrams are drawn as interactive Plotly figures, dispatched on column names because latitude and longitude are two ordinary floats to a dtype check. Everything else falls through to the matplotlib line and bar builder, and a PNG is produced in every case so an image client keeps working. The dispatch is first-match, so a result carrying positions is always drawn as a track even when it also carries measurements.
 
-**Evaluation.** Text-to-SQL scores 0.567 execution accuracy over 67 questions on the shipped model and 0.483 on a second one, measured on the same questions. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 on **both** models, and worked examples, a repair attempt and a change of model have each failed to move it. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. The repair loop is worth 2 recovered queries of 6 attempts on llama and cannot touch the 21 questions that fail by returning the wrong rows without an error. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set written by the same person who wrote the schema, which is a real limit on what they can show.
+**Evaluation.** Text-to-SQL scores 0.617 execution accuracy over 67 questions on the shipped model. The earlier measurements, 0.567 on the same model and 0.483 on a second one, were taken on a previous prompt that may have been cut by the model's context window, and the second model has not been re-run since. Complex queries are much worse than either average suggests: the window bucket is 1 in 6 on **both** models, and worked examples, a repair attempt and a change of model have each failed to move it. Figures are single runs, and two back-to-back runs of an identical configuration disagreed on four of 46 questions, so none is precise to better than about a tenth. The repair loop recovered 2 queries of 4 attempts in the current run and cannot touch the 21 questions that fail by returning the wrong rows without an error. The seafloor fabrication and the current at 1000 decibars are both refused now, but by a lexical gate in front of the model rather than by anything the model learned, so the gold set measures the gate on those six questions and not the generator. A paraphrase the gate does not carry reaches the model exactly as before. Both columns come from one gold set written by the same person who wrote the schema, which is a real limit on what they can show.
 
 ## Roadmap
 
@@ -768,7 +776,6 @@ Done:
 - [x] IHO basin polygons loaded and the existing profiles backfilled, moving 128 of 1,099 into a different basin
 - [x] A second in-situ platform: 187 drifting buoys, 139,971 fixes, sharing the charts and regions with no code changed
 - [x] A conversational thread rather than a single question box, with each turn keeping its own chart, table and SQL
-- [x] Multilingual questions, answered in the language they were asked in, with detection that costs nothing for English
 - [x] Relative periods anchored to the archive: the SQL prompt is told where each platform's data starts and ends, read from the tables
 - [x] One trace per cast in profile plots, drawn whenever the rows are profiles rather than only when the question says "plot"
 - [x] Few-shot window-function examples, measured: they did not move the bucket
@@ -783,11 +790,14 @@ Done:
 - [x] The Docker stage, verified: both images build, the production compose comes up, and a request traverses nginx to the API to the database on real data. CI builds both images on every push and publishes them to GHCR on main
 - [x] GitHub Actions running the suite and the linter on 3.11 and 3.12
 - [x] Both models on the same 67 questions, which retracted an earlier claim: qwen's advantage on the window bucket was noise, and both score 0.167 there
-- [x] Scoped to the problem statement: the manual retrieval path, the MCP server, the file export and the combined route were removed, with their tests and dependencies
+- [x] Scoped to the problem statement: the manual retrieval path, the MCP server, the file export, the combined route and the multilingual translator were removed, with their tests and dependencies
+- [x] OpenTelemetry tracing: a span per pipeline step and per model call, with token usage and cold-load time, joined to the interaction log by `trace_id`
+- [x] The SQL prompt stopped being cut by the model's context window: a 6,144-token window on every call, the buoy schema gated to buoy questions, and a test that holds the worst case under the window. Re-measured at 0.617
 
 Not done, honestly:
 
 - [ ] Persist conversation history, which currently dies with the process
+- [ ] Re-run with the fixed prompt using `--runs 3`, and re-run `qwen2.5-coder:7b`, so the current figure has a spread and the model comparison is on the current prompt. About three hours for llama alone on this machine, and only if nothing else is using its memory
 - [ ] Load the data the problem statement's own examples ask for. There are no profiles in the equatorial band in March 2023, and no BGC readings in the Arabian Sea in the last six months of the archive, so both examples return correct, empty queries
 - [ ] Rename the Southern Indian Ocean region, which is the fallback for anything outside the named basins and so includes floats north of the equator
 - [ ] A judge that is not the model under test, which is the honest limit of the generation scores

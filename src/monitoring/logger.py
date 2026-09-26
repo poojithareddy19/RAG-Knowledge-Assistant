@@ -89,6 +89,7 @@ def log_interaction(answer: Answer) -> None:
         "embedding_model": answer.embedding_model,
         "tokens": answer.tokens,
         "error": answer.error,
+        "trace_id": answer.trace_id,
     }
 
     log_file = Path(cfg.monitoring.log_file)
@@ -160,6 +161,7 @@ def log_result(
             "",
         ),
         "error": result.get("error"),
+        "trace_id": result.get("trace_id"),
     }
 
     log_file = Path(cfg.monitoring.log_file)

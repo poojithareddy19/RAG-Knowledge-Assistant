@@ -33,9 +33,9 @@ from src.charts.builder import render, to_frame
 from src.charts.ocean import pick_ocean_chart, render_ocean
 from src.generation.answer_generator import AnswerGenerator
 from src.monitoring.logger import log_interaction, log_result
+from src.monitoring.tracing import set_attributes, span, trace_id
 from src.router.classifier import route as pick_route
 from src.router.rewriter import rewrite
-from src.router.translator import from_english, to_english
 from src.semantic.index import SemanticIndex, as_context
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
@@ -96,30 +96,47 @@ class RAGService:
         ``history`` is the recent (question, answer) pairs of this
         conversation, oldest first.
 
-        Two things happen at this edge and nowhere else. A question in another
-        language is translated to English, and a follow up is rewritten into a
-        standalone question. Everything after these two lines works on one
-        English, self-contained question, so the router, the SQL generator and
-        the cache never learn that either feature exists.
-
-        Order matters: translate first, then rewrite. The history holds English
-        questions, so rewriting a Hindi follow up against English context asks
-        the model to work across two languages at once.
+        A follow up is rewritten into a standalone question here and nowhere
+        else. Everything after that works on one self-contained question, so
+        the router, the SQL generator and the cache never learn that
+        conversations exist.
         """
+        with span("floatchat.answer", **{"floatchat.turn": len(history or []) + 1}) as root:
+            result = self._answer(question, history, root)
+
+        try:
+            # The question as typed, so the log reads back as the conversation
+            # happened. What was actually run is question_rewritten beside it.
+            log_result(
+                question,
+                result,
+            )
+        except Exception:
+            # Logging must never break the user path.
+            pass
+
+        return result
+
+    def _answer(self, question, history, root) -> dict:
         started = time.perf_counter()
 
         asked = question
 
-        question, language = to_english(question)
-
         if history:
-            question = rewrite(question, history)
+            with span("rewrite", **{"floatchat.history_turns": len(history)}) as step:
+                question = rewrite(question, history)
+                set_attributes(step, **{"floatchat.rewritten": question != asked})
 
-        chosen, how = pick_route(
-            question,
-            fallback=self.cfg.router.fallback,
-            use_model=self.cfg.router.enabled,
-        )
+        with span("route") as step:
+            chosen, how = pick_route(
+                question,
+                fallback=self.cfg.router.fallback,
+                use_model=self.cfg.router.enabled,
+            )
+            set_attributes(
+                step,
+                **{"floatchat.route": chosen, "floatchat.route_decided_by": how},
+            )
 
         if chosen == "summaries":
             result = self.answer_from_summaries(
@@ -134,17 +151,10 @@ class RAGService:
         result["route"] = chosen
         result["route_decided_by"] = how
 
-        # Both, always. A bad rewrite or a bad translation is the most likely
-        # new failure mode and it is invisible unless the pair travels together.
+        # Both, always. A bad rewrite is the most likely failure of a follow up
+        # and it is invisible unless the pair travels together.
         result["question"] = asked
         result["question_rewritten"] = question
-        result["language"] = language
-
-        if language:
-            # The table and the SQL stay as they are; it is the sentence
-            # summarising them that gets translated back.
-            result["answer_english"] = result.get("answer")
-            result["answer"] = from_english(result.get("answer", ""), language)
 
         # Always the end-to-end wall clock. The database time, when there
         # is one, is reported separately as db_elapsed_ms.
@@ -157,16 +167,19 @@ class RAGService:
             1,
         )
 
-        try:
-            # The question as typed, so the log reads back as the conversation
-            # happened. What was actually run is question_rewritten beside it.
-            log_result(
-                asked,
-                result,
-            )
-        except Exception:
-            # Logging must never break the user path.
-            pass
+        # The join key between interactions.jsonl and traces.jsonl, and what a
+        # reader pastes into Jaeger or Phoenix to see where the time went.
+        result["trace_id"] = trace_id(root)
+
+        set_attributes(
+            root,
+            **{
+                "floatchat.route": chosen,
+                "floatchat.answered": bool(result.get("answered")),
+                "floatchat.refused": bool(result.get("refused")),
+                "floatchat.reason": result.get("reason") or None,
+            },
+        )
 
         return result
 
@@ -226,20 +239,22 @@ class RAGService:
         context: str,
     ) -> dict:
         try:
-            raw_sql, cached = generate_sql(
-                question,
-                model=self.cfg.sql.get("model"),
-                timeout=self.cfg.sql.get(
-                    "gen_timeout_seconds",
-                    90,
-                ),
-                use_cache=self.cfg.cache.get(
-                    "enabled",
-                    True,
-                ),
-                return_cache_flag=True,
-                context=context,
-            )
+            with span("sql.generate") as step:
+                raw_sql, cached = generate_sql(
+                    question,
+                    model=self.cfg.sql.get("model"),
+                    timeout=self.cfg.sql.get(
+                        "gen_timeout_seconds",
+                        90,
+                    ),
+                    use_cache=self.cfg.cache.get(
+                        "enabled",
+                        True,
+                    ),
+                    return_cache_flag=True,
+                    context=context,
+                )
+                set_attributes(step, **{"floatchat.sql_cached": bool(cached)})
         except httpx.TimeoutException:
             return self._sql_failure(
                 "The language model did not answer in time, so no SQL was "
@@ -255,18 +270,26 @@ class RAGService:
 
         def _attempt(sql):
             """Validate and run one candidate query."""
-            safe = validate(
-                sql,
-                allowed_tables=self.cfg.sql.allowed_tables,
-                max_limit=self.cfg.sql.max_rows,
-                default_limit=self.cfg.sql.default_limit,
-                column_catalog=self._column_catalog(),
-            )
+            with span("sql.validate"):
+                safe = validate(
+                    sql,
+                    allowed_tables=self.cfg.sql.allowed_tables,
+                    max_limit=self.cfg.sql.max_rows,
+                    default_limit=self.cfg.sql.default_limit,
+                    column_catalog=self._column_catalog(),
+                )
 
-            return safe, run_query(
-                safe,
-                timeout_ms=self.cfg.sql.timeout_ms,
-            )
+            with span(
+                "db.query",
+                **{"db.system.name": "postgresql", "db.query.text": safe},
+            ) as step:
+                rows = run_query(
+                    safe,
+                    timeout_ms=self.cfg.sql.timeout_ms,
+                )
+                set_attributes(step, **{"db.response.returned_rows": rows["row_count"]})
+
+            return safe, rows
 
         repaired = False
 
@@ -343,11 +366,13 @@ class RAGService:
         # profile plot at all. An ordinary aggregate matches no ocean shape and
         # stays a table, so this changes nothing for questions that were
         # never pictures.
-        spec, ocean_kind = self._ocean_chart(
-            result,
-            question,
-            truncated=_hit_limit(safe_sql, result["row_count"]),
-        )
+        with span("chart.ocean") as step:
+            spec, ocean_kind = self._ocean_chart(
+                result,
+                question,
+                truncated=_hit_limit(safe_sql, result["row_count"]),
+            )
+            set_attributes(step, **{"floatchat.chart_kind": ocean_kind})
 
         if spec is not None:
             kind = ocean_kind
@@ -355,10 +380,12 @@ class RAGService:
         if want_chart:
             # The matplotlib render runs whatever the shape, because the API
             # contract promises a PNG and an image client has to keep working.
-            png, generic_kind = render(
-                result,
-                title=question,
-            )
+            with span("chart.render") as step:
+                png, generic_kind = render(
+                    result,
+                    title=question,
+                )
+                set_attributes(step, **{"floatchat.chart_kind": generic_kind})
 
             kind = kind or generic_kind
 
@@ -495,7 +522,11 @@ class RAGService:
         question: str,
     ) -> Answer:
         """Summaries-only path returning the typed Answer."""
-        answer = self.generator.answer(question)
+        with span("floatchat.ask") as root:
+            answer = self.generator.answer(question)
+            set_attributes(root, **{"floatchat.answered": answer.answered})
+
+        answer.trace_id = trace_id(root)
 
         try:
             log_interaction(answer)
