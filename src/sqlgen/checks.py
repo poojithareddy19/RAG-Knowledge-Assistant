@@ -2,8 +2,9 @@
 
 The validator decides whether a query is safe. These checks decide whether a
 safe query answers the question: the right period, the right thing counted, no
-filter the question never asked for. Each one exists because the model got
-exactly that wrong on real questions, despite a prompt rule saying not to.
+filter the question never asked for, a region compared with a region column.
+Each one exists because the model got exactly that wrong on real questions,
+despite a prompt rule saying not to.
 
 They all run, and every problem found goes to the repair in one message. They
 used to raise one at a time, and a query with two problems ("measurements in
@@ -20,6 +21,7 @@ from __future__ import annotations
 from src.sqlgen.context_filters import copied_filter
 from src.sqlgen.counting import count_problem
 from src.sqlgen.period import period_problem
+from src.sqlgen.region_column import region_misplaced
 
 
 def mismatches(question: str, sql: str, context: str = "") -> list[str]:
@@ -28,6 +30,7 @@ def mismatches(question: str, sql: str, context: str = "") -> list[str]:
         period_problem(question, sql),
         count_problem(question, sql),
         copied_filter(question, sql, context),
+        region_misplaced(question, sql),
     ]
 
     return [reason for reason in found if reason]
