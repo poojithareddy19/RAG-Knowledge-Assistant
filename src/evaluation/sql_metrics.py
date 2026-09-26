@@ -49,6 +49,7 @@ from decimal import Decimal
 
 import pandas as pd
 
+from src.sqlgen.counting import ProfileOvercount, profiles_overcounted
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
 from src.sqlgen.period import OpenEndedPeriod, open_ended_year
@@ -222,6 +223,9 @@ def evaluate_one(
             if problem := open_ended_year(question, safe):
                 raise OpenEndedPeriod(problem)
 
+            if overcount := profiles_overcounted(question, safe):
+                raise ProfileOvercount(overcount)
+
             out = run_query(safe)
             record["executed"] = True
         except Exception as first:
@@ -269,6 +273,9 @@ def evaluate_one(
 
             if problem := open_ended_year(question, safe):
                 raise OpenEndedPeriod(problem) from first
+
+            if overcount := profiles_overcounted(question, safe):
+                raise ProfileOvercount(overcount) from first
 
             out = run_query(safe)
             record["executed"] = True

@@ -345,3 +345,44 @@ def test_a_query_that_runs_past_the_year_is_repaired_before_it_is_run(spans, mon
     # Two validate spans: the open-ended query failed it, the repair passed.
     validates = [s for s in spans.get_finished_spans() if s.name == "sql.validate"]
     assert [v.status.status_code for v in validates] == [StatusCode.ERROR, StatusCode.UNSET]
+
+
+def test_a_profile_count_through_measurements_is_repaired(spans, monkeypatch):
+    """The benchmark miss: profiles per region counted measurement rows. The
+    check sends it to the repair, and only the corrected query is run."""
+    pipeline, svc, _ = _service(monkeypatch, "data")
+
+    ran = []
+    repair_errors = []
+
+    monkeypatch.setattr(svc, "_summaries", lambda q: [])
+    monkeypatch.setattr(svc, "_column_catalog", lambda: None)
+    monkeypatch.setattr(
+        pipeline,
+        "generate_sql",
+        lambda *a, **k: (
+            "SELECT p.region, COUNT(*) FROM profiles p JOIN measurements m "
+            "ON p.profile_id = m.profile_id WHERE m.qc_flag = 1 GROUP BY p.region",
+            False,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "validate", lambda sql, **_: sql + " LIMIT 500")
+
+    def repair(question, broken, error, **_):
+        repair_errors.append(error)
+        return "SELECT region, count(*) FROM profiles GROUP BY region ORDER BY region"
+
+    def run(sql, **_):
+        ran.append(sql)
+        return {"columns": ["region", "count"], "rows": [["Arabian Sea", 205]],
+                "row_count": 1, "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(pipeline, "repair_sql", repair)
+    monkeypatch.setattr(pipeline, "run_query", run)
+
+    result = svc.answer("Number of profiles per region")
+
+    assert result["answered"] is True
+    assert result["sql_repaired"] is True
+    assert len(ran) == 1 and "measurements" not in ran[0]
+    assert "no join to measurements" in repair_errors[0]

@@ -37,6 +37,7 @@ from src.monitoring.tracing import set_attributes, span, trace_id
 from src.router.classifier import route as pick_route
 from src.router.rewriter import rewrite
 from src.semantic.index import SemanticIndex, as_context
+from src.sqlgen.counting import ProfileOvercount, profiles_overcounted
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
 from src.sqlgen.period import OpenEndedPeriod, open_ended_year
@@ -287,6 +288,11 @@ class RAGService:
 
                 if problem:
                     raise OpenEndedPeriod(problem)
+
+                overcount = profiles_overcounted(question, safe)
+
+                if overcount:
+                    raise ProfileOvercount(overcount)
 
             with span(
                 "db.query",
