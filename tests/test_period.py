@@ -8,7 +8,7 @@ everything it cannot be sure of.
 
 import pytest
 
-from src.sqlgen.period import open_ended_year
+from src.sqlgen.period import open_ended_year, period_problem, range_end_excluded
 
 REAL_QUESTION = "How many profiles are in the Arabian Sea and in 2022?"
 REAL_SQL = (
@@ -82,3 +82,72 @@ def test_the_gold_reference_queries_are_never_flagged():
     assert rows
     for row in rows:
         assert open_ended_year(row["question"], row["expected_sql"]) is None, row["question"]
+
+
+# ---------------------------------------------------------------------------
+# The end of a range of named years
+# ---------------------------------------------------------------------------
+
+RANGE_QUESTION = "How many profiles were recorded between 2010 and 2015?"
+
+
+def test_the_real_range_miss_is_caught():
+    """The model's SQL for this gold question in every recorded run."""
+    sql = "SELECT COUNT(*) FROM profiles WHERE obs_time >= '2010-01-01' AND obs_time < '2015-01-01'"
+
+    reason = range_end_excluded(RANGE_QUESTION, sql)
+
+    assert reason is not None
+    assert "obs_time < '2016-01-01'" in reason
+    assert period_problem(RANGE_QUESTION, sql) == reason
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How many profiles were recorded between 2010 and 2015?",
+        "How many profiles were recorded from 2010 to 2015?",
+        "How many profiles were recorded 2010-2015?",
+    ],
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1 FROM profiles WHERE obs_time >= '2010-01-01' AND obs_time <= '2015-01-01'",
+        "SELECT 1 FROM profiles WHERE obs_time BETWEEN '2010-01-01' AND '2015-01-01'",
+    ],
+)
+def test_every_phrasing_and_form_that_stops_at_the_end_year_is_caught(question, sql):
+    assert range_end_excluded(question, sql) is not None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # The reference form.
+        "SELECT count(*) FROM profiles WHERE obs_time >= '2010-01-01' AND obs_time < '2016-01-01'",
+        "SELECT 1 FROM profiles WHERE obs_time <= '2015-12-31'",
+        "SELECT 1 FROM profiles WHERE EXTRACT(year FROM obs_time) BETWEEN 2010 AND 2015",
+        # A bound on some other date is not this problem.
+        "SELECT 1 FROM profiles WHERE obs_time < '2015-06-01'",
+    ],
+)
+def test_a_range_that_includes_the_end_year_passes(sql):
+    assert range_end_excluded(RANGE_QUESTION, sql) is None
+
+
+def test_a_question_with_no_range_is_left_alone():
+    sql = "SELECT 1 FROM profiles WHERE obs_time < '2015-01-01'"
+
+    assert range_end_excluded("How many profiles were recorded before 2015?", sql) is None
+    assert range_end_excluded("How many profiles are there?", sql) is None
+
+
+def test_no_reference_query_trips_either_period_check():
+    import csv
+
+    with open("data/evaluation/ocean_questions.csv", encoding="utf-8") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["expected_sql"].strip()]
+
+    for row in rows:
+        assert period_problem(row["question"], row["expected_sql"]) is None, row["question"]

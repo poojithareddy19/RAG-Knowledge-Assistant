@@ -40,7 +40,7 @@ from src.semantic.index import SemanticIndex, as_context
 from src.sqlgen.counting import ProfileOvercount, profiles_overcounted
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
-from src.sqlgen.period import OpenEndedPeriod, open_ended_year
+from src.sqlgen.period import PeriodMismatch, period_problem
 from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.validator import SQLRejected, validate
 from src.utils.config import get_config
@@ -284,10 +284,10 @@ class RAGService:
                 # A query can be safe and still answer a different question.
                 # Raised before the database is touched, and not as an
                 # SQLRejected, so it reaches the repair with its reason.
-                problem = open_ended_year(question, safe)
+                problem = period_problem(question, safe)
 
                 if problem:
-                    raise OpenEndedPeriod(problem)
+                    raise PeriodMismatch(problem)
 
                 overcount = profiles_overcounted(question, safe)
 

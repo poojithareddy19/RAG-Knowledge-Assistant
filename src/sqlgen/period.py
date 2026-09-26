@@ -14,6 +14,14 @@ edited behind the model's back. It is deliberately narrow: it speaks only when
 the question names exactly one year with no word that opens the range ("since
 2022", "from 2020 to 2023"), and the query has a lower bound on that year and
 no upper bound on any date. Anything it is unsure of, it leaves alone.
+
+The second check is the other end of the same rule. "Between 2010 and 2015"
+names two years, and a named year is a whole year, as a named month is a whole
+month in the schema catalog, so the range runs to the end of 2015. The model
+wrote obs_time < '2015-01-01', which drops 2015 entirely, and missed that gold
+question in every recorded run. The reference answer has always been
+< '2016-01-01'. The question is left as it is: changing it to fit the model
+would be tuning the benchmark.
 """
 
 from __future__ import annotations
@@ -61,8 +69,59 @@ def open_ended_year(question: str, sql: str) -> str | None:
     )
 
 
-class OpenEndedPeriod(ValueError):
-    """A query that runs past the one year the question asked about.
+# "between 2010 and 2015", "from 2010 to 2015", "2010-2015": two named years.
+_YEAR_RANGE = re.compile(
+    r"\b(?:between|from)\s+((?:19|20)\d{2})\s+(?:and|to|through|until|till)\s+"
+    r"((?:19|20)\d{2})\b"
+    r"|\b((?:19|20)\d{2})\s*-\s*((?:19|20)\d{2})\b",
+    re.I,
+)
+
+
+def range_end_excluded(question: str, sql: str) -> str | None:
+    """Why this query stops at the start of the last year named, or None.
+
+    Speaks only when the query bounds the range at the first instant of the
+    end year: obs_time < 'END-01-01', or <= it, or BETWEEN ... AND 'END-01-01'.
+    Every other form, including the correct < 'END+1-01-01', is left alone.
+    """
+    if not question or not sql:
+        return None
+
+    match = _YEAR_RANGE.search(question)
+
+    if not match:
+        return None
+
+    start, end = [int(y) for y in match.groups() if y]
+
+    if end <= start:
+        return None
+
+    cut = rf"'{end}-01-01(?:[ t]00:00(?::00)?)?'"
+    excluded = re.compile(
+        rf"<\s*=?\s*(?:date\s*|timestamp\s*)?{cut}|\bbetween\s+'[^']*'\s+and\s+{cut}",
+        re.I,
+    )
+
+    if not excluded.search(sql):
+        return None
+
+    return (
+        f"the question asks for {start} to {end}, and a named year is the whole "
+        f"year, so {end} is included, but the query stops at the start of {end} "
+        f"and leaves it out. Bound it as obs_time >= '{start}-01-01' AND "
+        f"obs_time < '{end + 1}-01-01'"
+    )
+
+
+def period_problem(question: str, sql: str) -> str | None:
+    """The first period mismatch between the question and the query, or None."""
+    return open_ended_year(question, sql) or range_end_excluded(question, sql)
+
+
+class PeriodMismatch(ValueError):
+    """A query that covers a different period than the question asked about.
 
     Not an SQLRejected on purpose: a validator refusal is never repaired, and
     this is exactly the kind of mistake a repair given the reason can fix.

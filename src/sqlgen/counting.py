@@ -79,4 +79,4 @@ def profiles_overcounted(question: str, sql: str) -> str | None:
 
 class ProfileOvercount(ValueError):
     """A profile count that counts measurement rows. Repairable, like
-    OpenEndedPeriod, so deliberately not an SQLRejected."""
+    PeriodMismatch, so deliberately not an SQLRejected."""
