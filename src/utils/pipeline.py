@@ -39,6 +39,7 @@ from src.router.rewriter import rewrite
 from src.semantic.index import SemanticIndex, as_context
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
+from src.sqlgen.period import OpenEndedPeriod, open_ended_year
 from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.validator import SQLRejected, validate
 from src.utils.config import get_config
@@ -279,6 +280,14 @@ class RAGService:
                     column_catalog=self._column_catalog(),
                 )
 
+                # A query can be safe and still answer a different question.
+                # Raised before the database is touched, and not as an
+                # SQLRejected, so it reaches the repair with its reason.
+                problem = open_ended_year(question, safe)
+
+                if problem:
+                    raise OpenEndedPeriod(problem)
+
             with span(
                 "db.query",
                 **{"db.system.name": "postgresql", "db.query.text": safe},
@@ -344,8 +353,8 @@ class RAGService:
 
                 return {
                     "answer": (
-                        "The query was accepted but the database rejected "
-                        f"it, and a second attempt failed too: {detail}"
+                        "The first query failed and a second attempt "
+                        f"failed too: {detail}"
                     ),
                     "answered": False,
                     "refused": True,

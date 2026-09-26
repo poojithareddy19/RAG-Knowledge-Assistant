@@ -296,3 +296,52 @@ def test_a_chart_that_cannot_be_drawn_still_returns_the_rows(spans, monkeypatch)
     assert result["rows"] == [[1]]
     assert result["chart_png"] is None
     assert _by_name(spans)["chart.render"].status.status_code is StatusCode.ERROR
+
+
+def test_a_query_that_runs_past_the_year_is_repaired_before_it_is_run(spans, monkeypatch):
+    """The real follow-up: "and in 2022?" came back as obs_time >= '2022-01-01'
+    and was answered 63. The check sends it to the repair with its reason, and
+    the database only ever sees the bounded query."""
+    pipeline, svc, _ = _service(monkeypatch, "data")
+
+    ran = []
+    repair_errors = []
+
+    def repair(question, broken, error, **_):
+        repair_errors.append(error)
+        return (
+            "SELECT COUNT(*) FROM profiles WHERE region = 'Arabian Sea' "
+            "AND obs_time >= '2022-01-01' AND obs_time < '2023-01-01'"
+        )
+
+    monkeypatch.setattr(svc, "_summaries", lambda q: [])
+    monkeypatch.setattr(svc, "_column_catalog", lambda: None)
+    monkeypatch.setattr(
+        pipeline,
+        "generate_sql",
+        lambda *a, **k: (
+            "SELECT COUNT(*) FROM profiles WHERE region = 'Arabian Sea' "
+            "AND obs_time >= '2022-01-01'",
+            False,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "validate", lambda sql, **_: sql + " LIMIT 500")
+    monkeypatch.setattr(pipeline, "repair_sql", repair)
+
+    def run(sql, **_):
+        ran.append(sql)
+        return {"columns": ["count"], "rows": [[0]], "row_count": 1, "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(pipeline, "run_query", run)
+
+    result = svc.answer("How many profiles are in the Arabian Sea and in 2022?")
+
+    assert result["answered"] is True
+    assert result["sql_repaired"] is True
+    assert result["answer"] == "count: 0"
+    assert len(ran) == 1 and "obs_time < '2023-01-01'" in ran[0]
+    assert "2023-01-01" in repair_errors[0]
+
+    # Two validate spans: the open-ended query failed it, the repair passed.
+    validates = [s for s in spans.get_finished_spans() if s.name == "sql.validate"]
+    assert [v.status.status_code for v in validates] == [StatusCode.ERROR, StatusCode.UNSET]

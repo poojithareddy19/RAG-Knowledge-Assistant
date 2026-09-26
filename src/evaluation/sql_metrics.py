@@ -51,6 +51,7 @@ import pandas as pd
 
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
+from src.sqlgen.period import OpenEndedPeriod, open_ended_year
 from src.sqlgen.schema_context import load_column_catalog
 from src.sqlgen.scope import error_is_the_answer
 from src.sqlgen.validator import PLATFORMS, SQLRejected, validate
@@ -216,6 +217,11 @@ def evaluate_one(
             safe = validate(raw, ALLOWED)
             record["validated"] = True
 
+            # The same period check as the app, so the benchmark keeps
+            # measuring the system people use.
+            if problem := open_ended_year(question, safe):
+                raise OpenEndedPeriod(problem)
+
             out = run_query(safe)
             record["executed"] = True
         except Exception as first:
@@ -260,6 +266,9 @@ def evaluate_one(
 
             safe = validate(raw, ALLOWED)
             record["validated"] = True
+
+            if problem := open_ended_year(question, safe):
+                raise OpenEndedPeriod(problem) from first
 
             out = run_query(safe)
             record["executed"] = True
