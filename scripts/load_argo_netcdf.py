@@ -40,6 +40,10 @@ SET platform   = COALESCE(
     last_seen  = GREATEST(floats.last_seen, EXCLUDED.last_seen)
 """
 
+# geom is built here, on insert. 007 added the column and backfilled the rows
+# that existed then, but on a new volume the migrations run before any data,
+# so every profile this loader wrote had a NULL geom and silently dropped out
+# of ST_DWithin distance queries. The drifter loader always did it this way.
 INSERT_PROFILE = """
 INSERT INTO profiles (
     float_id,
@@ -48,9 +52,13 @@ INSERT INTO profiles (
     latitude,
     longitude,
     region,
-    data_mode
+    data_mode,
+    geom
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s)
+VALUES (
+    %s, %s, %s, %s, %s, %s, %s,
+    ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
+)
 ON CONFLICT (float_id, cycle_number) DO NOTHING
 RETURNING profile_id
 """
@@ -75,6 +83,24 @@ def measurement_row(profile_id, level):
         [profile_id, level.qc_flag]
         + [level.values[parameter.column] for parameter in PARAMETERS]
         + [level.flags[parameter.qc_column] for parameter in PARAMETERS]
+    )
+
+
+def profile_row(profile):
+    """One profile as a tuple matching ``INSERT_PROFILE``.
+
+    Longitude comes before latitude in the point: ST_MakePoint takes x, y.
+    """
+    return (
+        profile.float_id,
+        profile.cycle_number,
+        profile.obs_time,
+        profile.latitude,
+        profile.longitude,
+        profile.region,
+        profile.data_mode,
+        profile.longitude,
+        profile.latitude,
     )
 
 
@@ -106,18 +132,7 @@ def load(targets):
 
             floats.add(profile.float_id)
 
-            cur.execute(
-                INSERT_PROFILE,
-                (
-                    profile.float_id,
-                    profile.cycle_number,
-                    profile.obs_time,
-                    profile.latitude,
-                    profile.longitude,
-                    profile.region,
-                    profile.data_mode,
-                ),
-            )
+            cur.execute(INSERT_PROFILE, profile_row(profile))
 
             row = cur.fetchone()
 
