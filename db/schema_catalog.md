@@ -26,7 +26,7 @@ One row per surfacing event. A float has many profiles.
   - `Bay of Bengal`
   - `Southern Indian Ocean`
 - `data_mode` (char) - `R` real-time, `D` delayed, `A` adjusted. `D` is the
-  quality-controlled science record. NULL for rows loaded from CSV.
+  quality-controlled science record.
 
 ## measurements
 

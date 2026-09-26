@@ -13,7 +13,9 @@ The service exposes two public query methods:
 
     ask(question) -> Answer
         Summaries-only path returning the typed Answer dataclass.
-        Used by the API's route_override and by the generation evaluation.
+        Used by the generation evaluation. The API's route_override calls
+        answer_from_summaries instead, which returns the same dictionary shape
+        as answer().
 
     answer(question) -> dict
         Routed path returning a uniform dictionary. Used by FastAPI, and so by
@@ -231,6 +233,16 @@ class RAGService:
             summary.text for summary in summaries
         ]
 
+        # The summaries route reports which models answered; the data route
+        # did not, so its log lines had empty provider and model fields.
+        generation = self.cfg.get("generation", {}) or {}
+        sql = self.cfg.get("sql", {}) or {}
+        embeddings = self.cfg.get("embeddings", {}) or {}
+
+        result.setdefault("provider", generation.get("provider", ""))
+        result.setdefault("model", sql.get("model") or generation.get("model", ""))
+        result.setdefault("embedding_model", embeddings.get("model_name", ""))
+
         return result
 
     def _query_data(
@@ -306,7 +318,9 @@ class RAGService:
             # benchmark has had this since it was written, and the app had
             # not, which made the published numbers describe a system nobody
             # was using. They match now.
-            declined = isinstance(first, SQLRejected)
+            # A validator refusal is never repaired; a validator mistake
+            # (unknown column or table, a cross-platform join) is.
+            declined = isinstance(first, SQLRejected) and not first.repairable
 
             reason = _repair_refusal(raw_sql, first, self._column_catalog())
 

@@ -28,10 +28,11 @@ Point it elsewhere with `VITE_API_BASE` if the service is not local.
 
 ## Why only through the API
 
-It talks to `POST /ask` and to nothing else, as a client on another server
-would. That is the point of having it: a UI written against `AskResponse` finds
-the places where that response is awkward to consume, which a page reaching
-into the pipeline directly never can. It is the only front end; there used to
+It talks to the API and to nothing else (`POST /ask` for answers, `GET /health`
+for the status line), as a client on another server would. That is the point
+of having it: a UI written against `AskResponse` finds the places where that
+response is awkward to consume, which a page reaching into the pipeline
+directly never can. It is the only front end; there used to
 be a Streamlit dashboard beside it, removed so that behaviour is reachable one
 way. Evaluation runs from the command line (`src/evaluation/`) and monitoring
 reads `logs/interactions.jsonl` and `logs/traces.jsonl`.

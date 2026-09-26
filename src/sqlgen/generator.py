@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 
 import httpx
 
-from src.generation.llm import keep_alive, num_ctx
+from src.generation.llm import keep_alive, model_for, num_ctx, ollama_base_url
 from src.monitoring.tracing import llm_span, record_ollama
 from src.sqlgen.schema_context import build_context, data_coverage
 from src.sqlgen.scope import out_of_scope
@@ -457,15 +456,8 @@ def _complete(
 ) -> str:
     """One completion, with the retry that covers a cold model load."""
 
-    base = os.environ.get(
-        "OLLAMA_BASE_URL",
-        "http://localhost:11434",
-    )
-
-    model = model or os.environ.get(
-        "GENERATION__MODEL",
-        "llama3.1:latest",
-    )
+    base = ollama_base_url()
+    model = model or model_for("sql")
 
     payload = {
         "model": model,
@@ -576,10 +568,7 @@ def generate_sql(
             else declined
         )
 
-    model = model or os.environ.get(
-        "GENERATION__MODEL",
-        "llama3.1:latest",
-    )
+    model = model or model_for("sql")
 
     version = cache_version(context, include_examples)
 

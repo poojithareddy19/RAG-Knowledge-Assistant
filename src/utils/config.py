@@ -1,19 +1,22 @@
 """Configuration loading and access.
 
-Single source of truth for runtime settings. Load order (lowest to highest
-priority):
+Single source of truth for runtime settings. Priority, lowest to highest:
 
-    config.yaml  ->  environment variables  ->  .env file
+    config.yaml  ->  .env file  ->  environment variables
 
-Environment overrides use a double-underscore path syntax that mirrors the YAML
-nesting, e.g. ``RETRIEVAL__TOP_K=8`` overrides ``retrieval.top_k``. Flat keys
-such as ``OLLAMA_BASE_URL`` are also read directly for secrets.
+.env is loaded without overriding, so a variable already set in the
+environment wins over the same one in .env.
+
+Overrides use a double-underscore path that mirrors the YAML nesting, e.g.
+``SEMANTIC__TOP_K=8`` overrides ``semantic.top_k``. The section must exist in
+config.yaml: an override for a section that does not is ignored. Flat keys
+such as ``OLLAMA_BASE_URL`` are read directly for secrets.
 
 Usage
 -----
     from src.utils.config import get_config
     cfg = get_config()
-    cfg.retrieval.top_k         # -> int
+    cfg.semantic.top_k          # -> int
     cfg.generation.provider     # -> "ollama"
 """
 from __future__ import annotations
@@ -38,7 +41,7 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 
 class AttrDict(dict):
-    """Dict that also supports attribute access (cfg.retrieval.top_k)."""
+    """Dict that also supports attribute access (cfg.semantic.top_k)."""
 
     def __getattr__(self, item: str) -> Any:
         try:

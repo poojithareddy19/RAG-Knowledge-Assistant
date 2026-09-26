@@ -485,3 +485,33 @@ def test_two_problems_reach_the_repair_together(spans, monkeypatch):
     assert "never reads the measurements table" in repair_errors[0]
     assert "US ARGO PROJECT" in repair_errors[0]
     assert len(ran) == 1 and "FROM measurements" in ran[0]
+
+
+def test_a_repairable_rejection_is_repaired(spans, monkeypatch):
+    """The app used to refuse every validator rejection, including a wrong
+    column the benchmark would have repaired. Now it repairs mistakes too."""
+    pipeline, svc, _ = _service(monkeypatch, "data")
+    calls = []
+
+    def validate(sql, **_):
+        calls.append(sql)
+        if "f.qc_flag" in sql:
+            raise pipeline.SQLRejected("floats has no column 'qc_flag'", repairable=True)
+        return sql + " LIMIT 500"
+
+    monkeypatch.setattr(svc, "_summaries", lambda q: [])
+    monkeypatch.setattr(svc, "_column_catalog", lambda: None)
+    monkeypatch.setattr(pipeline, "generate_sql", lambda *a, **k: ("SELECT f.qc_flag FROM floats f", False))
+    monkeypatch.setattr(pipeline, "validate", validate)
+    monkeypatch.setattr(pipeline, "repair_sql", lambda *a, **k: "SELECT count(*) FROM floats")
+    monkeypatch.setattr(
+        pipeline,
+        "run_query",
+        lambda sql, **_: {"columns": ["count"], "rows": [[80]], "row_count": 1, "elapsed_ms": 1.0},
+    )
+
+    result = svc.answer("How many floats are in the database?")
+
+    assert result["answered"] is True
+    assert result["sql_repaired"] is True
+    assert len(calls) == 2

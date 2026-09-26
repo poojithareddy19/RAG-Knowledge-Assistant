@@ -1,10 +1,9 @@
 import json
-import os
 import re
 
 import httpx
 
-from src.generation.llm import keep_alive, num_ctx
+from src.generation.llm import keep_alive, model_for, num_ctx, ollama_base_url
 from src.monitoring.tracing import llm_span, record_ollama
 
 ROUTES = ("summaries", "data", "chart")
@@ -95,13 +94,8 @@ def rule_route(question):
 
 
 def model_route(question, model=None, timeout=30):
-    base = os.environ.get(
-        "OLLAMA_BASE_URL",
-        "http://localhost:11434",
-    )
-
-    model = model or os.environ.get("ROUTER__MODEL", "llama3.1:latest",
-    )
+    base = ollama_base_url()
+    model = model or model_for("router")
 
     prompt = f"{SYSTEM}\n\nQuestion: {question}\nJSON:"
 

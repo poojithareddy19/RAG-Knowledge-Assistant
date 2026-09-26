@@ -10,7 +10,8 @@ The design goals:
     than guess. That is the model-side half of the fallback mechanism; the
     retrieval-side half is the confidence threshold.
   * Every number in a summary is a statistic of the tables, computed at index
-    time. The model is told this so it does not present a mean as a reading.
+    time. The prompt does not say so; the rule against inventing numbers is what
+    keeps the model to the ones in the summaries.
 
 Prompt text is versioned via PROMPT_VERSION so evaluation runs can be attributed
 to a specific prompt.

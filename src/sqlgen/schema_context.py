@@ -68,8 +68,10 @@ def load_examples(limit=4):
         text = f.read_text(encoding="utf-8").strip()
         lines = text.splitlines()
 
+        # The files open with "-- Question: ...". Only the dashes used to be
+        # stripped, so the model was shown "Question:\tQuestion: ...".
         question = (
-            lines[0].lstrip("-\t").lstrip()
+            re.sub(r"^question:\s*", "", lines[0].lstrip("-\t").lstrip(), flags=re.I)
             if lines
             else f.stem
         )

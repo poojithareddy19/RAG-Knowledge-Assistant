@@ -8,8 +8,9 @@ else.
 from __future__ import annotations
 
 import base64
-import os
 import threading
+import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 
 import httpx
@@ -18,6 +19,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.schemas import AskRequest, AskResponse, HealthResponse
+from src.generation.llm import ollama_base_url
+from src.monitoring.logger import log_result
 from src.monitoring.tracing import span, trace_id
 from src.utils.config import get_config
 from src.utils.db import fetch_all
@@ -69,7 +72,12 @@ _service: RAGService | None = None
 # enough, and a follow up that loses its history degrades to being answered as
 # a standalone question rather than to an error. Redis or a sessions table is
 # the fix when either of those stops being acceptable.
-_history: dict[str, list[tuple[str, str]]] = {}
+_history: OrderedDict[str, list[tuple[str, str]]] = OrderedDict()
+
+# Sessions are capped as well as turns. Each is a few hundred characters, but a
+# client that sends a new session_id per request would otherwise grow this dict
+# for as long as the process lives; the least recently used session goes first.
+MAX_SESSIONS = 500
 
 
 def service() -> RAGService:
@@ -90,11 +98,15 @@ def remember(session_id: str, question: str, answer: str) -> None:
     """Append one exchange to a session, keeping only the recent turns."""
     turns = _history.setdefault(session_id, [])
     turns.append((question, answer))
+    _history.move_to_end(session_id)
 
     cap = _max_turns()
 
     if cap > 0 and len(turns) > cap:
         del turns[:-cap]
+
+    while len(_history) > MAX_SESSIONS:
+        _history.popitem(last=False)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -114,10 +126,7 @@ def health() -> HealthResponse:
             detail=f"database unreachable: {exc}",
         ) from exc
 
-    base = os.environ.get(
-        "OLLAMA_BASE_URL",
-        "http://localhost:11434",
-    )
+    base = ollama_base_url()
 
     try:
         llm_ok = (
@@ -144,6 +153,8 @@ def ask(req: AskRequest) -> AskResponse:
 
     svc = service()
 
+    started = time.perf_counter()
+
     if req.route_override == "summaries":
         with span("floatchat.answer", **{"floatchat.route_override": "summaries"}) as root:
             result = svc.answer_from_summaries(req.question)
@@ -163,6 +174,19 @@ def ask(req: AskRequest) -> AskResponse:
         result["route"] = req.route_override
         result["route_decided_by"] = "override"
         result["trace_id"] = trace_id(root)
+
+    if req.route_override:
+        # RAGService.answer fills these and logs the question; the override
+        # paths bypass it, so they did neither and left no line in
+        # interactions.jsonl at all.
+        result["question"] = req.question
+        result["question_rewritten"] = req.question
+        result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
+
+        try:
+            log_result(req.question, result)
+        except Exception:
+            pass
 
     else:
         result = svc.answer(

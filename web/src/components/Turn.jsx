@@ -56,6 +56,10 @@ export default function Turn({ turn }) {
             confidence {(result.confidence ?? 0).toFixed(2)}
             {result.elapsed_ms != null && ` · ${Math.round(result.elapsed_ms)} ms`}
             {result.row_count != null && ` · ${result.row_count} rows`}
+            {/* The schema says a client should be able to see that the SQL
+                shown is a second attempt; it was returned and never shown. */}
+            {result.sql_repaired && ' · SQL repaired after a first attempt failed'}
+            {result.trace_id && ` · trace ${result.trace_id.slice(0, 8)}`}
           </p>
         </>
       )}

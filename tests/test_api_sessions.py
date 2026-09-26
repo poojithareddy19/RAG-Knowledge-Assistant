@@ -78,3 +78,46 @@ def test_the_generic_chart_reaches_the_client_as_base64(monkeypatch):
 
     assert base64.b64decode(response.chart_png_base64) == b"\x89PNG fake bytes"
     assert response.chart_kind == "bar"
+
+
+def test_an_override_request_is_logged(monkeypatch):
+    """The override paths bypass RAGService.answer, which is where logging
+    happens, so they used to leave no line in interactions.jsonl."""
+    logged = []
+
+    class FakeService:
+        def answer_from_summaries(self, question):
+            return {"answer": "ok", "confidence": 0.9, "sources": []}
+
+    monkeypatch.setattr(main, "service", lambda: FakeService())
+    monkeypatch.setattr(main, "log_result", lambda q, r: logged.append((q, r)))
+
+    response = main.ask(main.AskRequest(question="tell me about float 1900083",
+                                        route_override="summaries"))
+
+    assert response.route_decided_by == "override"
+    assert len(logged) == 1
+    question, result = logged[0]
+    assert question == "tell me about float 1900083"
+    assert result["route"] == "summaries"
+    assert result["elapsed_ms"] is not None
+
+
+def test_the_number_of_sessions_is_capped(monkeypatch):
+    monkeypatch.setattr(main, "MAX_SESSIONS", 3)
+
+    for n in range(5):
+        main.remember(f"s{n}", "q", "a")
+
+    assert list(main._history) == ["s2", "s3", "s4"]
+
+
+def test_a_returning_session_is_kept_over_older_ones(monkeypatch):
+    monkeypatch.setattr(main, "MAX_SESSIONS", 2)
+
+    main.remember("old", "q", "a")
+    main.remember("new", "q", "a")
+    main.remember("old", "q2", "a2")
+    main.remember("newest", "q", "a")
+
+    assert list(main._history) == ["old", "newest"]

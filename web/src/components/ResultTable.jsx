@@ -23,7 +23,7 @@ export default function ResultTable({ columns, rows, rowCount }) {
       </table>
       {rowCount > shown.length && (
         <p className="muted">
-          showing {shown.length} of {rowCount} rows. Export to get all of them.
+          showing {shown.length} of {rowCount} rows. The API returns the first 100.
         </p>
       )}
     </div>

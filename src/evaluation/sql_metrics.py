@@ -214,7 +214,7 @@ def evaluate_one(
         record["sql"] = raw
 
         try:
-            safe = validate(raw, ALLOWED)
+            safe = validate(raw, ALLOWED, column_catalog=_catalog())
             record["validated"] = True
 
             # The same checks as the app, so the benchmark keeps measuring
@@ -228,7 +228,11 @@ def evaluate_one(
             # refusal is never repaired: the model declining, or the scope
             # gate refusing a quantity the schema does not hold, is the
             # correct answer rather than a failure to work around.
-            if not repair or _is_refusal(raw):
+            # The same rule as the app: refusals, and validator rejections that
+            # are refusals rather than mistakes, are never repaired.
+            refused = isinstance(first, SQLRejected) and not first.repairable
+
+            if not repair or _is_refusal(raw) or refused:
                 raise
 
             # A failure can be the answer. If the column the query wanted does
@@ -263,7 +267,7 @@ def evaluate_one(
 
             record["sql"] = raw
 
-            safe = validate(raw, ALLOWED)
+            safe = validate(raw, ALLOWED, column_catalog=_catalog())
             record["validated"] = True
 
             check_answers_question(question, safe, context)
@@ -382,9 +386,9 @@ def evaluate_file(
 
 def _default_model() -> str:
     """Whatever the generator would pick if nobody named a model."""
-    import os
+    from src.generation.llm import model_for
 
-    return os.environ.get("GENERATION__MODEL", "llama3.1:latest")
+    return model_for("sql")
 
 
 def _refused(frame):
@@ -518,7 +522,7 @@ def _format(mean, sd, places=3) -> str:
 
 def _print_progress(position, total, record):
     if record["bucket"] == "unanswerable":
-        verdict = "REFUSED  " if not record["validated"] else "ANSWERED!"
+        verdict = "REFUSED  " if record.get("refused") or not record["validated"] else "ANSWERED!"
     else:
         verdict = "MATCH    " if record["matched"] else "WRONG    "
 

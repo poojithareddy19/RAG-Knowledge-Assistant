@@ -83,7 +83,7 @@ generated SQL runs as.
 
 | Variable | Default | Why |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | `gda_local_pw` | In `docker-compose.yml`, in plain text, in the repository |
+| `POSTGRES_PASSWORD` | `gda_local_pw` | A literal in `docker-compose.yml`, not read from the environment: edit the file. The read-only role's password is set in `db/003_roles.sql` |
 | `DATABASE_URL` | the same | Both roles' passwords are the committed defaults |
 | `WEB_PORT` | `80` | Put a TLS terminator in front, or change the port |
 | `GENERATION_MODEL` | `llama3.1:latest` | |

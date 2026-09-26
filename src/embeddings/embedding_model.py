@@ -2,8 +2,8 @@
 
 Thin wrapper over ``sentence-transformers`` that (a) applies the correct
 instruction prefixes for query vs passage (bge-style models need them,
-MiniLM-style models don't), and (b) L2-normalizes so the FAISS inner-product
-index yields cosine similarity.
+MiniLM-style models don't), and (b) L2-normalizes, so pgvector's cosine
+distance (the <=> operator) and an inner product agree.
 
 The model is loaded lazily and cached, so importing this module is cheap and the
 (heavy) model only loads on first real use.

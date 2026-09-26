@@ -1,4 +1,9 @@
-"""Does adding example queries to the prompt improve SQL accuracy?"""
+"""Do example queries in the prompt make more queries run and return rows?
+
+Success here is "executed and returned at least one row", not execution
+accuracy: no reference SQL is passed, so a wrong but non-empty answer counts.
+Use src/evaluation/sql_metrics.py to measure accuracy.
+"""
 
 import sys
 from pathlib import Path

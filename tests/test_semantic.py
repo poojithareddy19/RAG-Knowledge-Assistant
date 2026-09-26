@@ -242,3 +242,87 @@ def test_refresh_removes_summaries_of_subjects_that_are_gone(monkeypatch):
     # Everything just rebuilt is kept; anything else is removed.
     assert prune[0][2] == (["float", "region"], ["1901393", "Arabian Sea"])
     assert result["removed"] == 40
+
+
+def test_reference_examples_are_not_labelled_twice():
+    """The files open with "-- Question: ...", and only the dashes used to be
+    stripped, so the prompt read "Question:\tQuestion: ..."."""
+    from src.sqlgen.schema_context import build_context, load_examples
+
+    for example in load_examples():
+        assert not example["question"].lower().startswith("question")
+
+    assert "Question:\tQuestion:" not in build_context(True)
+
+
+# ---------------------------------------------------------------------------
+# Listing questions: every float with a sensor, not the top four
+# ---------------------------------------------------------------------------
+
+import contextlib as _contextlib  # noqa: E402
+
+import pytest as _pytest  # noqa: E402
+
+
+class _Recorder:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def execute(self, sql, params):
+        self.calls.append((sql, params))
+
+    def fetchall(self):
+        return self.rows
+
+
+def _index_with(monkeypatch, rows):
+    from src.semantic import index as index_module
+
+    recorder = _Recorder(rows)
+
+    @_contextlib.contextmanager
+    def fake_cursor(readonly=False, timeout_ms=None):
+        yield recorder
+
+    monkeypatch.setattr(index_module, "cursor", fake_cursor)
+    idx = index_module.SemanticIndex.__new__(index_module.SemanticIndex)
+    idx.table = "data_summaries"
+    return idx, recorder
+
+
+@_pytest.mark.parametrize(
+    "question, label, region",
+    [
+        ("Which floats carry oxygen sensors?", "dissolved oxygen", None),
+        ("Which floats measure dissolved oxygen in the Arabian Sea?", "dissolved oxygen", "Arabian Sea"),
+        ("List all floats with a chlorophyll sensor", "chlorophyll", None),
+        ("What floats measure pH in the Bay of Bengal?", "pH", "Bay of Bengal"),
+    ],
+)
+def test_a_listing_question_looks_up_every_float_with_the_sensor(monkeypatch, question, label, region):
+    rows = [("float", str(n), f"float {n} also measures {label}") for n in range(15)]
+    idx, recorder = _index_with(monkeypatch, rows)
+
+    hits = idx._by_sensor(question)
+
+    assert len(hits) == 15
+    assert all(h.score == 1.0 for h in hits)
+    _, params = recorder.calls[0]
+    assert params[0] == f"%also measures%{label}%"
+    assert params[1] == region
+
+
+@_pytest.mark.parametrize(
+    "question",
+    [
+        "Tell me about float 1902458",          # not a listing
+        "Which floats reported in the Arabian Sea?",  # a listing, but no sensor
+        "What is the average oxygen at the surface?",  # a sensor, but not a listing
+    ],
+)
+def test_other_questions_do_not_trigger_the_listing(monkeypatch, question):
+    idx, recorder = _index_with(monkeypatch, [])
+
+    assert idx._by_sensor(question) == []
+    assert recorder.calls == []

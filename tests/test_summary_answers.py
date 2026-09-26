@@ -124,7 +124,7 @@ def test_an_answer_cites_the_summaries_it_was_written_from():
 
 def test_nothing_retrieved_declines_without_calling_the_model():
     llm = FakeLLM()
-    answer = _generator([], llm).answer("what is the wind speed")
+    answer = _generator([], llm).answer("what colour is the moon")
 
     assert not answer.answered
     assert llm.calls == 0
@@ -185,3 +185,86 @@ def test_the_service_dictionary_carries_citations_as_plain_data():
         "score": 0.82,
         "rank": 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# Questions the summaries cannot hold, declined exactly
+# ---------------------------------------------------------------------------
+
+
+class IndexWithoutFloat(FakeIndex):
+    """Retrieval returns neighbours, but the named float is not in the index."""
+
+    def unknown_floats(self, question):
+        return ["2900007"] if "2900007" in question else []
+
+
+@pytest.mark.parametrize(
+    "question, reason_part",
+    [
+        # Scored 0.84 on retrieval confidence: the nearest other floats.
+        ("Tell me about float 2900007", "no float 2900007"),
+        # Scored 0.79: the Arabian Sea summaries match on the region.
+        ("What is the wind speed over the Arabian Sea?", "wind"),
+        # Scored 0.81: the Bay of Bengal summaries match on the region.
+        ("Describe the drifting buoys in the Bay of Bengal", "not the drifting buoys"),
+    ],
+)
+def test_the_three_unanswerable_gold_questions_are_declined_before_the_model(question, reason_part):
+    llm = FakeLLM()
+    generator = ag.AnswerGenerator(IndexWithoutFloat([FLOAT, REGION]), llm)
+
+    answer = generator.answer(question)
+
+    assert not answer.answered
+    assert llm.calls == 0
+    assert reason_part in answer.reason
+
+
+def test_a_float_the_index_holds_is_still_answered():
+    llm = FakeLLM()
+    generator = ag.AnswerGenerator(IndexWithoutFloat([FLOAT]), llm)
+
+    answer = generator.answer("Tell me about float 1901393")
+
+    assert answer.answered
+    assert llm.calls == 1
+
+
+class ListingIndex(FakeIndex):
+    """A listing question returns every float with the sensor."""
+
+    def __init__(self, hits, label, region=None):
+        super().__init__(hits)
+        self._listing = (label, region, hits)
+
+    def sensor_listing(self, question):
+        return self._listing
+
+
+def test_a_listing_is_written_out_in_full_without_the_model():
+    """Given fifteen oxygen floats the model listed thirteen and invented a
+    claim about the rest, so the list is written out, every float cited."""
+    floats = [
+        Summary(kind="float", subject=str(1900000 + n), text=f"float {n} also measures dissolved oxygen", score=1.0)
+        for n in range(15)
+    ]
+    llm = FakeLLM()
+    generator = ag.AnswerGenerator(ListingIndex(floats, "dissolved oxygen"), llm)
+
+    answer = generator.answer("Which floats carry oxygen sensors?")
+
+    assert answer.answered
+    assert llm.calls == 0
+    assert answer.answer.startswith("15 floats measure dissolved oxygen:")
+    for n, hit in enumerate(floats, start=1):
+        assert f"{hit.subject} [{n}]" in answer.answer
+
+
+def test_a_listing_names_its_region_and_handles_one_float():
+    floats = [Summary(kind="float", subject="1902457", text="also measures chlorophyll", score=1.0)]
+    generator = ag.AnswerGenerator(ListingIndex(floats, "chlorophyll", "Arabian Sea"), FakeLLM())
+
+    answer = generator.answer("Which floats measure chlorophyll in the Arabian Sea?")
+
+    assert answer.answer == "1 float in the Arabian Sea measures chlorophyll: 1902457 [1]."

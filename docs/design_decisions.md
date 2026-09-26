@@ -124,8 +124,9 @@ real archive.
 ## Structured JSONL logging
 
 One JSON object per line is greppable, streamable, and loads straight into
-pandas without a database. The same log feeds the monitoring dashboard and
-offline evaluation, so operational data and eval data never drift apart.
+pandas without a database. It records every routed question with its route,
+SQL, timings and trace id, so a production answer can be looked up and
+re-run by the same evaluation code.
 
 ## OpenTelemetry tracing beside the log, not instead of it
 

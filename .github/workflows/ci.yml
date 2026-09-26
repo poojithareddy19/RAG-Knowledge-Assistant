@@ -44,9 +44,8 @@ jobs:
       # question this matrix exists to answer.
       fail-fast: false
       matrix:
-        # pyproject declares >=3.12; the machine this was developed on runs
-        # 3.11. Both are tested until that disagreement is settled one way or
-        # the other, because a floor nobody runs is a floor nobody checks.
+        # pyproject declares >=3.11 and the images run 3.12, so both are
+        # tested: a floor nobody runs is a floor nobody checks.
         python-version: ["3.11", "3.12"]
 
     steps:
@@ -121,7 +120,7 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/floatchat-${{ matrix.name }}:latest
             ghcr.io/${{ github.repository_owner }}/floatchat-${{ matrix.name }}:${{ github.sha }}
-          # Layer cache in the registry, so a push that changes only src/ does
+          # Layer cache in the GitHub Actions cache, so a push that changes only src/ does
           # not rebuild the torch layer. The API image is most of the runtime.
           cache-from: type=gha
           cache-to: type=gha,mode=max

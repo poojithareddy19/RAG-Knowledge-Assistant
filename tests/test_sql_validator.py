@@ -416,3 +416,46 @@ def test_one_aggregated_side_is_not_enough():
 FROM ( SELECT avg(m.temperature_c) AS t FROM measurements m GROUP BY m.profile_id ) a
 JOIN drifter_observations o ON true"""
         )
+
+
+# ---------------------------------------------------------------------------
+# Which rejections a repair may fix
+# ---------------------------------------------------------------------------
+
+import pytest as _pytest  # noqa: E402
+
+from src.sqlgen.validator import SQLRejected as _Rejected  # noqa: E402
+from src.sqlgen.validator import validate as _validate  # noqa: E402
+
+_TABLES = ["floats", "profiles", "measurements", "drifters", "drifter_observations"]
+
+
+@_pytest.mark.parametrize(
+    "sql",
+    [
+        "UNANSWERABLE: there is no wind in this database",
+        "DELETE FROM profiles",
+        "SELECT 1 FROM profiles; DROP TABLE profiles",
+        "SELECT pg_sleep(10) FROM profiles",
+    ],
+)
+def test_refusals_and_unsafe_statements_are_not_repairable(sql):
+    with _pytest.raises(_Rejected) as raised:
+        _validate(sql, _TABLES)
+
+    assert raised.value.repairable is False
+
+
+@_pytest.mark.parametrize(
+    "sql, catalog",
+    [
+        ("SELECT * FROM pg_shadow", None),
+        ("SELECT f.qc_flag FROM floats f", {"floats": {"float_id", "platform"}}),
+        ("SELECT count(*) FROM measurements m JOIN drifter_observations o ON o.region = 'x'", None),
+    ],
+)
+def test_mistakes_a_repair_can_fix_are_repairable(sql, catalog):
+    with _pytest.raises(_Rejected) as raised:
+        _validate(sql, _TABLES, column_catalog=catalog)
+
+    assert raised.value.repairable is True

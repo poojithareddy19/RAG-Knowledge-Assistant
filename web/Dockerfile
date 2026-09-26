@@ -1,6 +1,7 @@
 # Two stages. Node builds the bundle; nginx serves it. The runtime image
 # carries no node_modules and no toolchain, which takes it from roughly
-# 400 MB to under 60 MB and removes every build dependency from the thing
+# 400 MB to about 75 MB (74 MB measured, most of it Plotly) and removes every
+# build dependency from the thing
 # facing the internet.
 
 FROM node:22-alpine AS build

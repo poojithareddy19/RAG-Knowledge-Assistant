@@ -31,7 +31,21 @@ FORBIDDEN_IDENTIFIERS = {
 
 
 class SQLRejected(Exception):
-    pass
+    """A query the validator will not run.
+
+    ``repairable`` separates a mistake from a refusal. The model declining,
+    anything that is not a single SELECT, and forbidden words are refusals and
+    are never handed to a repair: a repair asked to fix "DELETE FROM profiles"
+    would find some SELECT to answer with. An unknown table or column, a query
+    naming no known table, and a join across the two platforms are mistakes a
+    repair given the reason can fix, and the pipeline and the benchmark both
+    repair them now. They used to disagree: the app refused every rejection,
+    the benchmark repaired every one.
+    """
+
+    def __init__(self, message: str, repairable: bool = False):
+        super().__init__(message)
+        self.repairable = repairable
 
 
 def validate(
@@ -106,10 +120,10 @@ def validate(
     unknown = used - {t.lower() for t in allowed_tables}
 
     if unknown:
-        raise SQLRejected(f"unknown table(s): {sorted(unknown)}")
+        raise SQLRejected(f"unknown table(s): {sorted(unknown)}", repairable=True)
 
     if not used:
-        raise SQLRejected("no known table referenced")
+        raise SQLRejected("no known table referenced", repairable=True)
 
     if column_catalog:
         _check_columns(lowered, scan, column_catalog)
@@ -325,7 +339,8 @@ def _check_platforms(scan, platforms):
             + " tables to the ".join(carried)
             + " tables: the two platforms share no key, so a question about "
             "both is answered by aggregating each separately and joining the "
-            "results"
+            "results",
+            repairable=True
         )
 
 
@@ -431,7 +446,8 @@ def _check_columns(lowered, scan, column_catalog):
         if known and column not in known:
             raise SQLRejected(
                 f"{table} has no column {column!r} "
-                f"(referenced as {qualifier}.{column})"
+                f"(referenced as {qualifier}.{column})",
+                repairable=True,
             )
 
 

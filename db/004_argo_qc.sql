@@ -1,5 +1,5 @@
 -- db/004_argo_qc.sql
--- Columns the NetCDF loader can fill but a CSV export cannot.
+-- Columns the NetCDF loader fills: data mode and per-parameter QC flags.
 
 -- Which variables the profile was read from: R real-time, D delayed,
 -- A adjusted. In D and A the scientific values live in the ADJUSTED fields.

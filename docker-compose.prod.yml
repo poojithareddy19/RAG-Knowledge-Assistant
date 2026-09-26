@@ -41,7 +41,6 @@ services:
       # OLLAMA_BASE_URL: ${OLLAMA_URL}
       GENERATION__PROVIDER: ollama
       GENERATION__MODEL: ${GENERATION_MODEL:-llama3.1:latest}
-      VECTORSTORE__BACKEND: pgvector
     # Not published. nginx is the only way in, so the API is not separately
     # exposed and there is one place to put a certificate.
     ports: !override []

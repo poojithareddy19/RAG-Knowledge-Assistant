@@ -40,7 +40,6 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       GENERATION__PROVIDER: ollama
       GENERATION__MODEL: llama3.1:latest
-      VECTORSTORE__BACKEND: pgvector
     ports:
       - "8000:8000"
     extra_hosts:

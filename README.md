@@ -398,20 +398,22 @@ Three harnesses, because the three things that can go wrong fail differently: re
 
 26 questions about what the archive holds, 23 answerable and 3 that the summaries cannot answer. Each answerable question names the floats or regions an answer must rest on; the unanswerable three are kept for the generation scores below and left out here, where there is nothing for retrieval to find.
 
-| Metric | k=4 (as configured) | k=5 |
-| --- | --- | --- |
-| **Hit@k** | **0.957** | **0.957** |
-| Recall@k | 0.819 | 0.833 |
-| Precision@k | 0.337 | 0.287 |
-| nDCG@k | 0.857 | 0.854 |
-| MRR | 0.899 | 0.899 |
+| Metric | k=4, current (2026-09-27) | k=4, earlier | k=5, earlier |
+| --- | --- | --- | --- |
+| **Hit@k** | **0.957** | 0.957 | 0.957 |
+| Recall@k | **0.852** | 0.819 | 0.833 |
+| Precision@k | **0.370** | 0.337 | 0.287 |
+| nDCG@k | **0.892** | 0.857 | 0.854 |
+| MRR | **0.928** | 0.899 | 0.899 |
+
+The current column is after listing questions stopped being cut to the top four. "Which floats measure dissolved oxygen in the Arabian Sea?" used to return the four most similar summaries; the summaries state each float's sensors in one fixed sentence, so a question asking for every float with a sensor is now a literal lookup, like a named float, and returns all of them (`SemanticIndex.sensor_listing`). The earlier columns were measured before that change.
 
 Twenty of the twenty-three are found at rank one. Named floats are exact, because an identifier in the question is looked up rather than embedded. The one miss is "which region has the longest coverage in time", which retrieves floats rather than regions: every float summary also says when it reported, and nothing in that question names a region. The two partial hits are the multi-float questions, where the gold set names four or six floats and top-k holds only some of them, which is what recall@k below hit@k means.
 
 Reproduce with:
 
 ```bash
-python -m src.evaluation.evaluator --k 5
+python -m src.evaluation.evaluator --k 4
 ```
 
 **Text-to-SQL** ([`src/evaluation/sql_metrics.py`](src/evaluation/sql_metrics.py)). The metric is **execution accuracy**: run the generated query and a hand-written reference query and compare their result sets. Whether a query parses says nothing about whether it answered the question.
@@ -434,7 +436,7 @@ summaries, buckets, detail = evaluate_runs(runs=3)
 
 67 questions against **real data from both platforms**: 80 Argo floats, 1,099 profiles and 175,364 measurements from the Indian Ocean spanning 2001-07-23 to 2026-09-17, and 187 drifting buoys with 139,971 six-hourly fixes through 2023, across the Arabian Sea, the Bay of Bengal and the Southern Indian Ocean. 49,296 measurements carry a dissolved oxygen reading.
 
-The set was 52 questions and entirely Argo until the `drifter` bucket was added. Every figure below is the larger set, so it is not comparable line by line with the 0.620 and 0.587 quoted elsewhere in this README, which were measured on the 52.
+The set was 52 questions and entirely Argo until the `drifter` bucket was added. Every figure below is the larger set, so it is not comparable line by line with the 0.620 and 0.609 quoted elsewhere in this README, which were measured on the 52.
 
 `llama3.1:8b` is the default the system ships with. The first column is the current system, measured on 2026-09-26 after the [prompt stopped being cut](#the-prompt-was-being-cut). The other two are the earlier measurements, kept for comparison: `llama3.1:8b` and `qwen2.5-coder:7b`, a code specialist, on the same 67 questions with the previous prompt and Ollama's default 4,096-token window. They were run to find out whether the ceilings this benchmark keeps hitting are the model's or the prompt's.
 
@@ -532,7 +534,7 @@ Both lists are read off the schema rather than off this gold set. The refusal re
 | `llama3.1:8b`, on the original six | 0.833 (5/6) | 0.667 (4/6) | **1.000 (6/6)** |
 | False refusals contributed by the gate | - | - | **0 of 60** |
 
-That row is the six unanswerable questions the set had at the time, held constant so the three columns compare. A seventh was added later with the drifter bucket and the gate does not catch it, which is why the [headline](#results) reads 6/7 rather than 6/6. The gate keys on the quantity asked for, and the question asks how deep each drifting buoy dived: depth is a quantity this database holds, just not for that platform. It is the limit below, arriving immediately and from the first new questions written after the gate was built.
+That row is the six unanswerable questions the set had at the time, held constant so the three columns compare. A seventh was added later with the drifter bucket and the gate does not catch it, so the gate accounts for six of the seven refusals in the [headline](#results) and the model has to supply the seventh: llama3.1 has (7/7), qwen did not (6/7). The gate keys on the quantity asked for, and the question asks how deep each drifting buoy dived: depth is a quantity this database holds, just not for that platform. It is the limit below, arriving immediately and from the first new questions written after the gate was built.
 
 **These two numbers are exact rather than sampled.** The gate is a lexical test over the question, with no model call, so it does not move between runs and does not depend on which model is shipped: `qwen2.5-coder`'s perfect refusal score, [reported below](#the-seafloor-question-on-a-second-model) as evidence that the gap was the model's, is now something neither model is asked to supply. The six refusals are also immediate, where they previously cost a full generation each.
 
@@ -630,7 +632,7 @@ Two full runs were taken back to back on this machine, the second differing only
 
 Temperature 0 selects the most likely token; it does not make the arithmetic that ranks them reproducible, and under memory pressure this machine is visibly less reproducible than the one the earlier runs were taken on. Four of 46 is a swing of 0.087 available to any single run.
 
-**So a single run cannot separate a real change from noise here, and several comparisons in this README were made from single runs.** A difference of one or two questions between configurations is not evidence of anything, including the 0.620 to 0.587 move above. The `--runs N` flag exists for this and should be used for any claim that matters; it was not affordable for these runs at roughly 30 minutes each on this hardware, which is a limitation of the measurement rather than of the system.
+**So a single run cannot separate a real change from noise here, and several comparisons in this README were made from single runs.** A difference of one or two questions between configurations is not evidence of anything, including the 0.620 to 0.609 move above. The `--runs N` flag exists for this and should be used for any claim that matters; it was not affordable for these runs at roughly 30 minutes each on this hardware, which is a limitation of the measurement rather than of the system.
 
 Reproducing either column:
 
@@ -678,13 +680,20 @@ python -m src.evaluation.generation_metrics --judge    # adds the graded three
 
 #### Generation results
 
-The 26 questions above through the whole summaries route, `llama3.1:8b` writing the answers, one run:
+The 26 questions above through the whole summaries route, `llama3.1:8b` writing the answers, one run each:
 
-| Metric | Value |
-| --- | --- |
-| Answered | 0.885 (23 of 26) |
-| Citation accuracy, of those answered | **0.957** (22 of 23) |
-| Lexical support, of those answered | 0.770 |
+| Metric | Current (2026-09-27) | Earlier |
+| --- | --- | --- |
+| Answered | 0.846 (22 of 26) | 0.885 (23 of 26) |
+| Citation accuracy, of those answered | **1.000** (22 of 22) | 0.957 (22 of 23) |
+| Lexical support, of those answered | 0.784 | 0.770 |
+| Unanswerable questions declined | **3 of 3, before the model is called** | 2 of 3 |
+
+Answered went down by one and that is the fix: the earlier 23 included "Describe the drifting buoys in the Bay of Bengal", which is unanswerable and was the one miscitation described below. Now every answerable question the retrieval reaches is answered with a correct citation, and all three unanswerable ones are declined.
+
+They are declined by exact rules now, not by confidence. Calibrated on these 26 questions, retrieval confidence does not separate the two groups: the three unanswerable questions scored 0.79, 0.81 and 0.84, and answerable ones 0.74 to 0.89, so no threshold could decline the first without declining some of the second. What each unanswerable question names does separate them, and `AnswerGenerator._not_in_the_summaries` checks it before the model: a float number the index has no summary for, a quantity the scope gate knows no table holds, and a question about the drifting buoys, which the summaries never describe. The confidence gate is kept for the case it does handle, nothing retrieved at all.
+
+The sections below describe the earlier run.
 
 The three declines are the interesting rows, because they are three different mechanisms doing their job:
 
@@ -787,12 +796,16 @@ Done:
 - [x] Scoped to the problem statement: the manual retrieval path, the MCP server, the file export, the combined route and the multilingual translator were removed, with their tests and dependencies
 - [x] OpenTelemetry tracing: a span per pipeline step and per model call, with token usage and cold-load time, joined to the interaction log by `trace_id`
 - [x] The SQL prompt stopped being cut by the model's context window: a 6,144-token window on every call, the buoy schema gated to buoy questions, and a test that holds the worst case under the window. Re-measured at 0.617
+- [x] Answer checks between the validator and the database (`src/sqlgen/checks.py`): a query is safe and still wrong when it runs past the one year asked about, stops a year range before its last year, counts measurement rows as profiles or profiles as measurements, drops rows a count never excluded, copies a filter from the retrieved summaries, or compares a region name with the wrong column. Every problem found goes to the one repair attempt in a single message
+- [x] Listing questions answered in full: "which floats carry oxygen sensors" returns all fifteen, written out and cited without a model call, where the model given all fifteen listed thirteen
+- [x] The three unanswerable summary questions declined by exact rules before the model, after calibration showed confidence cannot separate them
+- [x] The app and the benchmark repair the same failures: refusals and unsafe statements never, fixable validator rejections (an unknown column or table, a cross-platform join) once
 - [x] Fewer waits per question: the model is held for 30 minutes after a call instead of Ollama's 5, both models load in the background at startup, and the router's rules now place all 67 SQL gold questions, 13 of which used to cost a 10 to 20 second routing call
 
 Not done, honestly:
 
 - [ ] Persist conversation history, which currently dies with the process
-- [ ] Re-run with the fixed prompt using `--runs 3`, and re-run `qwen2.5-coder:7b`, so the current figure has a spread and the model comparison is on the current prompt. About three hours for llama alone on this machine, and only if nothing else is using its memory
+- [ ] Re-run the full SQL benchmark after the answer checks, and with `--runs 3`, and re-run `qwen2.5-coder:7b`, so the current figure has a spread and the model comparison is on the current prompt. About three hours for llama alone on this machine, and only if nothing else is using its memory
 - [ ] Load the data the problem statement's own examples ask for. There are no profiles in the equatorial band in March 2023, and no BGC readings in the Arabian Sea in the last six months of the archive, so both examples return correct, empty queries
 - [ ] Rename the Southern Indian Ocean region, which is the fallback for anything outside the named basins and so includes floats north of the equator
 - [ ] A judge that is not the model under test, which is the honest limit of the generation scores

@@ -1,7 +1,7 @@
 """Assign a named region to a profile position.
 
-Shared by every loader so the CSV and NetCDF paths cannot disagree about which
-region a position belongs to.
+Shared by every loader, the Argo NetCDF loader and the drifter loader, so they
+cannot disagree about which region a position belongs to.
 
 The boundaries used to be three inequalities, which is coarse for a field that
 nearly every query groups by: they put the Gulf of Aden in the Arabian Sea and

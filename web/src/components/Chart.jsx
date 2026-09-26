@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-// Plotly is 4.5 MB minified, and most answers carry no chart, so it is loaded
+// Plotly is 4.8 MB minified, and most answers carry no chart, so it is loaded
 // the first time a chart is shown rather than with the page.
 let plotly = null
 

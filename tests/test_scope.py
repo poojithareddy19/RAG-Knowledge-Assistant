@@ -179,3 +179,26 @@ def test_without_a_catalog_the_guard_does_not_guess():
         )
         is None
     )
+
+
+def test_the_validators_wording_is_read_as_well_as_postgres():
+    """A column rejection from the validator now reaches the repair guard, so
+    the guard reads "drifters has no column 'x'" as well as Postgres's
+    'column "x" does not exist'."""
+    from src.sqlgen.scope import error_is_the_answer
+    from src.sqlgen.validator import PLATFORMS
+
+    catalog = {
+        "drifters": frozenset({"buoy_id", "wmo"}),
+        "drifter_observations": frozenset({"buoy_id", "sst_c", "obs_time"}),
+        "measurements": frozenset({"pressure_dbar"}),
+        "profiles": frozenset({"profile_id"}),
+        "floats": frozenset({"float_id"}),
+    }
+    sql = "SELECT max(o.pressure_dbar) FROM drifter_observations o"
+
+    reason = error_is_the_answer(
+        sql, "drifter_observations has no column 'pressure_dbar'", catalog, PLATFORMS
+    )
+
+    assert reason is not None and "pressure_dbar" in reason

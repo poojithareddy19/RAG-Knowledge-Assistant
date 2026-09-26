@@ -9,14 +9,14 @@ That is the half the project's own claim rests on. "Being confidently wrong is
 worse than saying nothing" is a statement about generated text, and without
 this the only evidence for it would be that retrieval found the right float.
 
-Four metrics, in two groups.
+Six metrics, in two groups.
 
 **Deterministic, no model call.** These cost nothing and cannot drift:
 
 - ``answered_rate`` - how often the system answers rather than declining.
   Refusing everything scores perfectly on faithfulness, so no faithfulness
   number means anything without this beside it.
-- ``citation_accuracy`` - of the answers given, how many were written from the
+- ``citation_correct`` (reported as citation accuracy) - of the answers given, how many were written from the
   float or region the gold set names. An answer about the Arabian Sea built
   from the Bay of Bengal's summary is not grounded, and this is checkable
   without asking a model anything.

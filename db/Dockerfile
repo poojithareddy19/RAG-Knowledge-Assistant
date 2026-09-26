@@ -1,6 +1,6 @@
 # The database needs two extensions, and no published image carries both.
 #
-# pgvector holds the document and summary embeddings; PostGIS holds the basin
+# pgvector holds the summary embeddings; PostGIS holds the basin
 # polygons and the profile positions. Dropping either breaks something already
 # shipped, so this image adds one to the other.
 #

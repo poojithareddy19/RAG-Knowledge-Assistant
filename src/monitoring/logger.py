@@ -68,7 +68,10 @@ def log_interaction(answer: Answer) -> None:
         "question": answer.question,
         "answer": answer.answer,
         "answered": answer.answered,
-        "confidence": answer.confidence.percent,
+        # 0 to 1, as log_result writes it, so one column means one thing
+        # across the file; the percent travels beside it.
+        "confidence": answer.confidence.score,
+        "confidence_percent": answer.confidence.percent,
         "confidence_components": answer.confidence.components,
         "reason": answer.reason,
         "retrieved": [
@@ -139,6 +142,7 @@ def log_result(
             )
         ),
         "confidence": result.get("confidence"),
+        "confidence_percent": result.get("confidence_percent"),
         "reason": result.get("reason", ""),
         "route": result.get("route"),
         "question_rewritten": result.get("question_rewritten"),
@@ -153,7 +157,18 @@ def log_result(
         "elapsed_ms": result.get("elapsed_ms"),
         "db_elapsed_ms": result.get("db_elapsed_ms"),
         "latency_ms": result.get("latency_ms", {}),
-        "retrieved": result.get("retrieved", []),
+        # The pipeline carries sources, not "retrieved", so this was always
+        # empty; it now records what the summaries route cited.
+        "retrieved": [
+            {
+                "kind": source.get("kind"),
+                "subject": source.get("subject"),
+                "score": round(float(source.get("score") or 0.0), 4),
+                "rank": source.get("rank"),
+            }
+            for source in result.get("sources") or []
+        ],
+        "context_used": len(result.get("context_used") or []),
         "provider": result.get("provider", ""),
         "model": result.get("model", ""),
         "embedding_model": result.get(

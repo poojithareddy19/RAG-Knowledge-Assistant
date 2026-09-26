@@ -84,8 +84,8 @@ def main() -> int:
         elif route == "chart":
             print(f"  chart            : none produced (kind={result.get('chart_kind')})")
 
-        # result["elapsed_ms"] is the database time on the success path, so
-        # report the measured wall clock alongside it.
+        # result["elapsed_ms"] is the end-to-end time the pipeline measured;
+        # the wall clock beside it includes this script's own overhead.
         print(f"  elapsed_ms       : {result.get('elapsed_ms')} (wall {wall_ms})")
 
     print("=" * 70)

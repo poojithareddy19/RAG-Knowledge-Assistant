@@ -131,3 +131,58 @@ def test_keep_alive_reads_the_config(monkeypatch):
 
     monkeypatch.setattr(llm, "get_config", lambda: AttrDict({"ollama": {"keep_alive": -1}}))
     assert llm.keep_alive() == -1
+
+
+def test_the_answer_call_caps_its_length(sent, monkeypatch):
+    """generation.max_tokens was read and never sent, so answers had no cap."""
+    from src.utils.config import AttrDict
+
+    monkeypatch.setattr(
+        llm,
+        "get_config",
+        lambda: AttrDict(
+            {
+                "generation": {"model": "m", "temperature": 0.0, "max_tokens": 321},
+                "secrets": {"ollama_base_url": "http://localhost:11434"},
+            }
+        ),
+    )
+
+    llm.OllamaLLM().generate("system", "user")
+
+    assert sent[-1]["options"]["num_predict"] == 321
+
+
+def test_each_role_reads_its_model_from_config(monkeypatch):
+    """router.model was read by the warm-up and ignored by the router."""
+    from src.utils.config import AttrDict
+
+    monkeypatch.setattr(
+        llm,
+        "get_config",
+        lambda: AttrDict(
+            {
+                "generation": {"model": "gen-model"},
+                "router": {"model": "router-model"},
+                "sql": {},
+                "secrets": {"ollama_base_url": "http://ollama:11434/"},
+            }
+        ),
+    )
+
+    assert llm.model_for("router") == "router-model"
+    assert llm.model_for("generation") == "gen-model"
+    # No model of its own: the generation model.
+    assert llm.model_for("sql") == "gen-model"
+    assert llm.ollama_base_url() == "http://ollama:11434"
+
+
+def test_the_router_call_uses_the_router_model(sent, monkeypatch):
+    import src.router.classifier as classifier
+
+    monkeypatch.setattr(classifier, "model_for", lambda role: f"{role}-model")
+    monkeypatch.setattr(classifier, "ollama_base_url", lambda: "http://x")
+
+    classifier.model_route("is the water warmer near Goa")
+
+    assert sent[-1]["model"] == "router-model"

@@ -23,6 +23,31 @@ DEFAULT_NUM_CTX = 6144
 DEFAULT_KEEP_ALIVE = "30m"
 
 
+def ollama_base_url() -> str:
+    """Where Ollama is, from config (which reads OLLAMA_BASE_URL)."""
+    try:
+        return str(get_config().secrets.ollama_base_url).rstrip("/")
+    except Exception:
+        return "http://localhost:11434"
+
+
+def model_for(role: str) -> str:
+    """The configured model for a role: "router", "sql" or "generation".
+
+    Every call site used to read its own environment variable (ROUTER__MODEL,
+    GENERATION__MODEL) with its own default, so config.yaml's router.model was
+    read by the warm-up and ignored by the router it describes. The config
+    loader already maps those variables onto the same keys, so an override
+    still works; it now has one place to land.
+    """
+    try:
+        cfg = get_config()
+        section = cfg.get(role, {}) or {}
+        return str(section.get("model") or cfg.generation.model)
+    except Exception:
+        return "llama3.1:latest"
+
+
 def num_ctx() -> int:
     """The context window sent with every Ollama call.
 
@@ -115,6 +140,7 @@ class OllamaLLM(BaseLLM):
             self.model,
             operation="chat",
             temperature=self.temperature,
+            max_tokens=self.max_tokens,
         ) as span:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -125,6 +151,9 @@ class OllamaLLM(BaseLLM):
                     "options": {
                         "temperature": self.temperature,
                         "num_ctx": num_ctx(),
+                        # generation.max_tokens, read into self.max_tokens and,
+                        # until this line, never sent: answers had no cap.
+                        "num_predict": self.max_tokens,
                     },
                     "messages": [
                         {"role": "system", "content": system_prompt},

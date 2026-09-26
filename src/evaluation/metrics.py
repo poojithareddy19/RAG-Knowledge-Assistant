@@ -25,10 +25,9 @@ def _relevance_flags(retrieved: Sequence[str], relevant: set[str], k: int) -> li
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Fraction of the relevant items that appear in the top k.
 
-    Counted over distinct items. Relevance here is keyed by document and page,
-    and a page is usually several chunks, so summing the hits would count one
-    relevant page twice for returning two of its chunks and report a recall
-    above 1.
+    Counted over distinct items. Relevance is keyed by summary subject
+    (kind:subject), and a retrieved list can name one subject twice, so summing
+    the hits would count it twice and report a recall above 1.
     """
     if not relevant:
         return 0.0

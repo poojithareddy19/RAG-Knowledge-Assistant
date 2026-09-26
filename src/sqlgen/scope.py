@@ -154,6 +154,9 @@ _MISSING_COLUMN = re.compile(
     re.I,
 )
 
+# The validator's wording for the same thing: "drifters has no column 'x'".
+_NO_SUCH_COLUMN = re.compile(r"\b([a-z_][a-z0-9_]*) has no column '([a-z_][a-z0-9_]*)'", re.I)
+
 _TABLE_REF = re.compile(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", re.I)
 
 
@@ -181,7 +184,7 @@ def error_is_the_answer(sql, error, column_catalog, platforms):
     Returns a reason to refuse, or None to let the repair proceed.
     """
 
-    match = _MISSING_COLUMN.search(str(error))
+    match = _MISSING_COLUMN.search(str(error)) or _NO_SUCH_COLUMN.search(str(error))
 
     if not match or not column_catalog:
         return None

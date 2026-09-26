@@ -19,12 +19,11 @@ ask, with no way to tell.
 
 from __future__ import annotations
 
-import os
 import re
 
 import httpx
 
-from src.generation.llm import keep_alive, num_ctx
+from src.generation.llm import keep_alive, model_for, num_ctx, ollama_base_url
 from src.monitoring.tracing import llm_span, record_ollama
 from src.utils.config import get_config
 
@@ -161,15 +160,8 @@ def _settings() -> dict:
 
 def _call_model(prompt: str, timeout: int = 30) -> str:
     """Ask the model for the rewrite. Separated so tests can stub one thing."""
-    base = os.environ.get(
-        "OLLAMA_BASE_URL",
-        "http://localhost:11434",
-    )
-
-    model = os.environ.get(
-        "GENERATION__MODEL",
-        "llama3.1:latest",
-    )
+    base = ollama_base_url()
+    model = model_for("generation")
 
     with llm_span("rewrite", model, temperature=0, max_tokens=120) as span:
         response = httpx.post(

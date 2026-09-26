@@ -68,6 +68,32 @@ WHERE subject_id = ANY(%s)
 # A WMO float identifier. Long enough not to catch a year or a depth.
 IDENTIFIER = re.compile(r"\b\d{5,}\b")
 
+# A question that asks for every float with a sensor, not the few most similar.
+# "Which floats carry oxygen sensors" was answered from the top four of fifteen,
+# named as if they were the list. The summaries state each float's sensors in
+# one fixed sentence ("It is a BGC float and also measures dissolved oxygen"),
+# so the full list is a literal lookup, like a named float.
+_LISTING = re.compile(r"\b(which|what|list|all|every|name)\b[^?]*\bfloats?\b", re.I)
+_SENSOR_LABELS = (
+    (re.compile(r"\boxygen\b", re.I), "dissolved oxygen"),
+    (re.compile(r"\bchlorophyll\b", re.I), "chlorophyll"),
+    (re.compile(r"\bnitrate\b", re.I), "nitrate"),
+    (re.compile(r"\bph\b", re.I), "pH"),
+    (re.compile(r"\bbackscatter\b", re.I), "particle backscatter"),
+    (re.compile(r"\b(bgc|biogeochemi\w*)\b", re.I), ""),
+)
+_REGIONS = ("Arabian Sea", "Bay of Bengal", "Southern Indian Ocean")
+
+BY_SENSOR = """
+SELECT subject_kind, subject_id, content
+FROM {table}
+WHERE subject_kind = 'float'
+  AND content ILIKE %s
+  AND (%s::text IS NULL OR content ILIKE %s)
+ORDER BY subject_id
+LIMIT 200
+"""
+
 
 class SemanticIndex:
     def __init__(self, table: str | None = None) -> None:
@@ -136,6 +162,7 @@ class SemanticIndex:
         limit = k or self.top_k
 
         named = self._by_identifier(question)
+        listed = self._by_sensor(question)
 
         vector = np.asarray(
             get_embedding_model().embed_query(question),
@@ -162,12 +189,68 @@ class SemanticIndex:
 
         seen = {(hit.kind, hit.subject) for hit in named}
 
+        # A full listing is not cut to top_k: the point is to return all of it.
+        for hit in listed:
+            if (hit.kind, hit.subject) not in seen:
+                named.append(hit)
+                seen.add((hit.kind, hit.subject))
+
+        limit = max(limit, len(named))
+
         for hit in nearest:
             if (hit.kind, hit.subject) not in seen:
                 named.append(hit)
                 seen.add((hit.kind, hit.subject))
 
         return named[:limit]
+
+    def _by_sensor(self, question: str) -> list[Summary]:
+        """Every float summary with the sensor a listing question names."""
+        listing = self.sensor_listing(question)
+
+        return listing[2] if listing else []
+
+    def sensor_listing(self, question: str):
+        """``(sensor label, region or None, summaries)`` for a listing question.
+
+        None when the question is not asking for every float with a sensor.
+        """
+        if not _LISTING.search(question):
+            return None
+
+        label = next((lab for pattern, lab in _SENSOR_LABELS if pattern.search(question)), None)
+
+        if label is None:
+            return None
+
+        region = next((r for r in _REGIONS if r.lower() in question.lower()), None)
+
+        with cursor(readonly=True) as cur:
+            cur.execute(
+                BY_SENSOR.format(table=self.table),
+                (
+                    f"%also measures%{label}%",
+                    region,
+                    f"%reported in%{region}%" if region else None,
+                ),
+            )
+            rows = cur.fetchall()
+
+        return label, region, [
+            Summary(kind=kind, subject=subject, text=content, score=1.0)
+            for kind, subject, content in rows
+        ]
+
+    def unknown_floats(self, question: str) -> list[str]:
+        """Float numbers the question names that the index has no summary for."""
+        identifiers = IDENTIFIER.findall(question)
+
+        if not identifiers:
+            return []
+
+        found = {hit.subject for hit in self._by_identifier(question)}
+
+        return [i for i in identifiers if i not in found]
 
     def _by_identifier(self, question: str) -> list[Summary]:
         """Summaries whose subject the question names outright."""
