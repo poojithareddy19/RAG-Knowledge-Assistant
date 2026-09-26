@@ -386,3 +386,50 @@ def test_a_profile_count_through_measurements_is_repaired(spans, monkeypatch):
     assert result["sql_repaired"] is True
     assert len(ran) == 1 and "measurements" not in ran[0]
     assert "no join to measurements" in repair_errors[0]
+
+
+def test_a_filter_copied_from_the_context_is_repaired(spans, monkeypatch):
+    """A value that is only in the retrieved summaries must not become a
+    filter. The check sends it to the repair, which answers the question as
+    asked."""
+    from src.utils.schemas import Summary
+
+    pipeline, svc, _ = _service(monkeypatch, "data")
+
+    ran = []
+    repair_errors = []
+    summary = Summary(
+        kind="float", subject="1902367",
+        text="ARGO float 1902367 is a PROVOR_MT platform and part of project Argo INDIA.",
+        score=0.7,
+    )
+
+    monkeypatch.setattr(svc, "_summaries", lambda q: [summary])
+    monkeypatch.setattr(svc, "_column_catalog", lambda: None)
+    monkeypatch.setattr(
+        pipeline,
+        "generate_sql",
+        lambda *a, **k: (
+            "SELECT count(*) FROM floats WHERE platform = 'PROVOR_MT'",
+            False,
+        ),
+    )
+    monkeypatch.setattr(pipeline, "validate", lambda sql, **_: sql + " LIMIT 500")
+
+    def repair(question, broken, error, **_):
+        repair_errors.append(error)
+        return "SELECT count(*) FROM floats"
+
+    def run(sql, **_):
+        ran.append(sql)
+        return {"columns": ["count"], "rows": [[80]], "row_count": 1, "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(pipeline, "repair_sql", repair)
+    monkeypatch.setattr(pipeline, "run_query", run)
+
+    result = svc.answer("How many floats are in the database?")
+
+    assert result["answered"] is True
+    assert result["answer"] == "count: 80"
+    assert len(ran) == 1 and "PROVOR_MT" not in ran[0]
+    assert "PROVOR_MT" in repair_errors[0]

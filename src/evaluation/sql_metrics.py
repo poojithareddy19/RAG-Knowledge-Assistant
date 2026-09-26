@@ -49,6 +49,7 @@ from decimal import Decimal
 
 import pandas as pd
 
+from src.sqlgen.context_filters import CopiedFilter, copied_filter
 from src.sqlgen.counting import ProfileOvercount, profiles_overcounted
 from src.sqlgen.executor import run_query
 from src.sqlgen.generator import generate_sql, repair_sql
@@ -226,6 +227,9 @@ def evaluate_one(
             if overcount := profiles_overcounted(question, safe):
                 raise ProfileOvercount(overcount)
 
+            if copied := copied_filter(question, safe, context):
+                raise CopiedFilter(copied)
+
             out = run_query(safe)
             record["executed"] = True
         except Exception as first:
@@ -276,6 +280,9 @@ def evaluate_one(
 
             if overcount := profiles_overcounted(question, safe):
                 raise ProfileOvercount(overcount) from first
+
+            if copied := copied_filter(question, safe, context):
+                raise CopiedFilter(copied) from first
 
             out = run_query(safe)
             record["executed"] = True
