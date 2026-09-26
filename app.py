@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -27,7 +28,14 @@ PLOTLY_CONFIG = {"topojsonURL": "/app/static/"}
 
 @st.cache_resource(show_spinner="Loading models and vector store…")
 def get_service() -> RAGService:
-    return RAGService()
+    svc = RAGService()
+
+    # Loads the models in the background once per process, since this
+    # function is cached. The page renders straight away either way.
+    if (get_config().get("ollama", {}) or {}).get("warm_up", True):
+        threading.Thread(target=svc.warm_up, daemon=True).start()
+
+    return svc
 
 
 def _page_home(cfg):

@@ -20,6 +20,7 @@ from src.monitoring.tracing import llm_span, record_ollama
 from src.utils.config import get_config
 
 DEFAULT_NUM_CTX = 6144
+DEFAULT_KEEP_ALIVE = "30m"
 
 
 def num_ctx() -> int:
@@ -33,6 +34,55 @@ def num_ctx() -> int:
         return int((get_config().get("ollama", {}) or {}).get("num_ctx", DEFAULT_NUM_CTX))
     except Exception:
         return DEFAULT_NUM_CTX
+
+
+def keep_alive() -> str | int:
+    """How long Ollama holds the model after a call, sent with every call.
+
+    Per request rather than as an Ollama setting, so it travels with the
+    repository instead of living in one machine's environment.
+    """
+    try:
+        value = (get_config().get("ollama", {}) or {}).get("keep_alive", DEFAULT_KEEP_ALIVE)
+    except Exception:
+        value = DEFAULT_KEEP_ALIVE
+
+    return value if isinstance(value, int) else str(value)
+
+
+def warm_up(models: list[str]) -> dict[str, float]:
+    """Load each model into Ollama, returning how long each took in seconds.
+
+    A request with no prompt loads the model and generates nothing. It sends
+    the same num_ctx as a real call, because a load at a different window is
+    thrown away by the first question and loaded again.
+    """
+    import time
+
+    import requests
+
+    base = get_config().secrets.ollama_base_url.rstrip("/")
+    took = {}
+
+    for model in models:
+        started = time.perf_counter()
+
+        with llm_span("warm_up", model) as span:
+            resp = requests.post(
+                f"{base}/api/generate",
+                json={
+                    "model": model,
+                    "keep_alive": keep_alive(),
+                    "options": {"num_ctx": num_ctx()},
+                },
+                timeout=300,
+            )
+            resp.raise_for_status()
+            record_ollama(span, resp.json())
+
+        took[model] = round(time.perf_counter() - started, 1)
+
+    return took
 
 
 @dataclass
@@ -71,6 +121,7 @@ class OllamaLLM(BaseLLM):
                 json={
                     "model": self.model,
                     "stream": False,
+                    "keep_alive": keep_alive(),
                     "options": {
                         "temperature": self.temperature,
                         "num_ctx": num_ctx(),

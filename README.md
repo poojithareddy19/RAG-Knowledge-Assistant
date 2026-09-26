@@ -793,6 +793,7 @@ Done:
 - [x] Scoped to the problem statement: the manual retrieval path, the MCP server, the file export, the combined route and the multilingual translator were removed, with their tests and dependencies
 - [x] OpenTelemetry tracing: a span per pipeline step and per model call, with token usage and cold-load time, joined to the interaction log by `trace_id`
 - [x] The SQL prompt stopped being cut by the model's context window: a 6,144-token window on every call, the buoy schema gated to buoy questions, and a test that holds the worst case under the window. Re-measured at 0.617
+- [x] Fewer waits per question: the model is held for 30 minutes after a call instead of Ollama's 5, both models load in the background at startup, and the router's rules now place all 67 SQL gold questions, 13 of which used to cost a 10 to 20 second routing call
 
 Not done, honestly:
 

@@ -8,6 +8,8 @@ the API cannot drift apart.
 from __future__ import annotations
 
 import os
+import threading
+from contextlib import asynccontextmanager
 
 import httpx
 from dotenv import load_dotenv
@@ -24,7 +26,22 @@ load_dotenv()
 
 cfg = get_config()
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Warm the models in the background, so startup is not held up by them.
+
+    The service answers as soon as it is up; a question that arrives before
+    the warm-up finishes simply loads what it needs, as it always did.
+    """
+    if (cfg.get("ollama", {}) or {}).get("warm_up", True):
+        threading.Thread(target=lambda: service().warm_up(), daemon=True).start()
+
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title=cfg.api.get("title", "FloatChat"),
     version=str(cfg.app.get("version", "0.3.0")),
     description=(

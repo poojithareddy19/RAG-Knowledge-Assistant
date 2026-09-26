@@ -4,7 +4,7 @@ import re
 
 import httpx
 
-from src.generation.llm import num_ctx
+from src.generation.llm import keep_alive, num_ctx
 from src.monitoring.tracing import llm_span, record_ollama
 
 ROUTES = ("summaries", "data", "chart")
@@ -40,7 +40,22 @@ CHART_WORDS = re.compile(
 
 DATA_WORDS = re.compile(
     r"\b(average|mean|median|count|how many|per year|per month|between "
-    r"\d{4}|temperature|salinity|floats?|profiles?|trend)\b",
+    r"\d{4}|temperature|salinity|floats?|profiles?|trend"
+    # Everything below was added after measuring which questions still cost a
+    # routing call: 13 of the 67 SQL gold questions, and every one of them was
+    # a data question the model then placed correctly, 10 to 20 seconds later.
+    # Superlatives, extremes and dates are computations over the measurements.
+    r"|earliest|latest|deepest|shallowest|highest|lowest|warmest|coldest"
+    r"|saltiest|fastest|slowest|most|least|distinct|percent(?:age)?"
+    r"|pressure|decibars?|dbar"
+    # The second platform and its quantities. The scope gate on the data path
+    # is what refuses "current speed at 1000 decibars" and "wind speed", with
+    # no model call at all, so sending those here is the cheaper refusal too.
+    r"|buoys?|drifters?|drifting|observations?|speed|velocit(?:y|ies)|currents?|wind"
+    # BGC parameters, and a request to change the data, which the validator
+    # refuses on the data path.
+    r"|oxygen|chlorophyll|nitrate|ph|backscatter|bgc|biogeochemical"
+    r"|compare|delete|drop|update|insert)\b",
     re.I,
 )
 
@@ -52,6 +67,8 @@ SUMMARY_WORDS = re.compile(
     r"\b(tell me about|describe|what do you know about|what is known about"
     r"|overview|what data (?:do you have|is (?:there|available))"
     r"|is there (?:any )?data|which regions? (?:are|is) covered|coverage"
+    # "What does the archive hold for the Arabian Sea" reached the model.
+    r"|what (?:does|do) (?:the )?(?:archive|database|data) (?:hold|have|contain)"
     r"|what sensors|which sensors|what does .{0,40}\bmeasure"
     # Which floats carry a sensor is a fact the summaries state outright.
     # Sent to SQL, the model invented a dissolved_oxygen_qc column and the
@@ -95,6 +112,7 @@ def model_route(question, model=None, timeout=30):
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
+                "keep_alive": keep_alive(),
                 "format": "json",
                 "options": {
                     "temperature": 0,

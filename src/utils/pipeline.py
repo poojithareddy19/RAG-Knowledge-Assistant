@@ -536,6 +536,45 @@ class RAGService:
 
         return answer
 
+    def warm_up(self) -> dict:
+        """Load the embedding model and the language model before a question does.
+
+        Meant for a background thread at startup. Without it the first
+        question paid about 40 seconds to load the embedding model and 18 to
+        load the language model, on top of answering. A failure is swallowed:
+        a model that could not be loaded now is loaded by the first question,
+        exactly as before.
+        """
+        from src.embeddings.embedding_model import get_embedding_model
+        from src.generation.llm import warm_up as load_models
+
+        took: dict = {}
+
+        with span("floatchat.warm_up") as step:
+            try:
+                started = time.perf_counter()
+                get_embedding_model().embed_query("warm up")
+                took["embedding_s"] = round(time.perf_counter() - started, 1)
+            except Exception as exc:
+                took["embedding_error"] = _first_line(exc)
+
+            models = sorted(
+                {
+                    self.cfg.generation.model,
+                    self.cfg.router.get("model") or self.cfg.generation.model,
+                    self.cfg.sql.get("model") or self.cfg.generation.model,
+                }
+            )
+
+            try:
+                took.update(load_models(models))
+            except Exception as exc:
+                took["llm_error"] = _first_line(exc)
+
+            set_attributes(step, **{f"floatchat.{k}": v for k, v in took.items()})
+
+        return took
+
     # ------------------------------------------------------------------
     # Index
     # ------------------------------------------------------------------

@@ -8,7 +8,7 @@ import re
 
 import httpx
 
-from src.generation.llm import num_ctx
+from src.generation.llm import keep_alive, num_ctx
 from src.monitoring.tracing import llm_span, record_ollama
 from src.sqlgen.schema_context import build_context, data_coverage
 from src.sqlgen.scope import out_of_scope
@@ -471,6 +471,7 @@ def _complete(
         "model": model,
         "prompt": prompt,
         "stream": False,
+        "keep_alive": keep_alive(),
         "options": {
             "temperature": 0,
             "num_predict": predict,

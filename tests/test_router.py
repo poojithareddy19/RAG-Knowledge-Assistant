@@ -74,3 +74,31 @@ def test_a_where_did_question_routes_to_chart():
 
 def test_counting_profiles_is_still_a_data_question():
     assert rule_route("how many profiles are there per region") == "data"
+
+
+def test_every_sql_gold_question_is_placed_without_the_model():
+    """13 of the 67 used to cost a routing call of 10 to 20 seconds, and the
+    model sent every one of them to data or chart anyway."""
+    import csv
+
+    with open("data/evaluation/ocean_questions.csv", encoding="utf-8") as fh:
+        questions = [row["question"] for row in csv.DictReader(fh)]
+
+    assert len(questions) == 67
+
+    for q in questions:
+        assert rule_route(q) in ("data", "chart"), q
+
+
+def test_an_unanswerable_quantity_goes_where_the_scope_gate_refuses_it():
+    """The gate is on the data path and refuses without calling a model."""
+    assert rule_route("What is the wind speed over the Arabian Sea?") == "data"
+    assert rule_route("What is the current speed at 1000 decibars?") == "data"
+
+
+def test_a_request_to_change_the_data_goes_to_the_validator():
+    assert rule_route("Delete everything from the measurements table") == "data"
+
+
+def test_asking_what_the_archive_holds_is_a_summary_question():
+    assert rule_route("What does the archive hold for the Arabian Sea?") == "summaries"
